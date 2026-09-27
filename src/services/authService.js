@@ -111,6 +111,11 @@ async function createUser({ username, password, role, fullName }) {
         throw new Error('All fields are required');
     }
 
+    const totalUsers = await DispatchUser.countDocuments();
+    if (totalUsers >= 10) {
+        throw new Error('Terminal user limit reached. A maximum of 10 users can exist on this terminal.');
+    }
+
     const cleanUsername = username.toLowerCase().trim();
     const existing = await DispatchUser.findOne({ username: cleanUsername });
     if (existing) {

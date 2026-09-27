@@ -150,9 +150,30 @@ function validateLicense(licenseBase64OrPath, secret = VENDOR_SECRET) {
 }
 
 /**
+ * Determine root application directory across packaged Electron release and development
+ */
+function getAppRootDir() {
+    if (process.resourcesPath && !process.resourcesPath.includes('node_modules')) {
+        return path.dirname(process.resourcesPath);
+    }
+    return process.cwd();
+}
+
+function getLicenseCandidates() {
+    const root = getAppRootDir();
+    const list = [
+        path.join(root, 'license.key'),
+        path.join(process.cwd(), 'license.key'),
+        path.join(__dirname, '../../license.key'),
+        path.join(__dirname, '../license.key')
+    ];
+    return [...new Set(list)].filter(Boolean);
+}
+
+/**
  * Activate and save license key file
  */
-function activateLicense(licenseString, targetDir = path.resolve(__dirname, '../..')) {
+function activateLicense(licenseString, targetDir = getAppRootDir()) {
     const res = validateLicense(licenseString);
     if (!res.valid) {
         throw new Error(res.error);
@@ -168,5 +189,7 @@ module.exports = {
     generateLicenseKey,
     validateLicense,
     activateLicense,
+    getAppRootDir,
+    getLicenseCandidates,
     VENDOR_SECRET
 };

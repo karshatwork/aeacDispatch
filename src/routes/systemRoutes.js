@@ -16,10 +16,24 @@ const scannerService = require('../services/scannerService');
 router.get('/health', (req, res) => {
     const dbStatus = getStatus();
     const scannerStatus = scannerService.getStatus();
+    const machineCode = getMachineFingerprint();
+    const licenseCandidates = [
+        path.join(process.cwd(), 'license.key'),
+        path.join(__dirname, '../../license.key'),
+        path.join(__dirname, '../license.key')
+    ];
+    const keyPath = licenseCandidates.find(p => fs.existsSync(p));
+    let license = { valid: false, machineCode, error: 'No license key installed on this system' };
+    if (keyPath) {
+        license = validateLicense(keyPath);
+        license.machineCode = machineCode;
+    }
+
     res.json({
         success: true,
         database: dbStatus,
         scanner: scannerStatus,
+        license,
         serverTime: new Date()
     });
 });
@@ -177,15 +191,46 @@ router.get('/users', authenticate, requireRole('manager'), async (req, res) => {
     }
 });
 
-// POST /api/system/users - Create user
+// POST /api/system/users - Create user (Hard limit: 10 max)
 router.post('/users', authenticate, requireRole('manager'), async (req, res) => {
     try {
+        const totalUsers = await DispatchUser.countDocuments();
+        if (totalUsers >= 10) {
+            return res.status(403).json({
+                success: false,
+                error: 'Terminal user limit reached. A maximum of 10 users can exist on this terminal.'
+            });
+        }
         const { username, password, role, fullName } = req.body;
         const authService = require('../services/authService');
         const user = await authService.createUser({ username, password, role, fullName });
         res.json({ success: true, user });
     } catch (err) {
         res.status(400).json({ success: false, error: err.message });
+    }
+});
+
+// DELETE /api/system/users/:id - Delete an operator account (Admin only)
+router.delete('/users/:id', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const user = await DispatchUser.findById(req.params.id);
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+        if (req.user && req.user._id && req.user._id.toString() === req.params.id) {
+            return res.status(400).json({ success: false, error: 'Cannot delete your own active administrator account.' });
+        }
+
+        if (user.role === 'admin') {
+            const adminCount = await DispatchUser.countDocuments({ role: 'admin' });
+            if (adminCount <= 1) {
+                return res.status(400).json({ success: false, error: 'Cannot delete the sole Administrator account on the terminal.' });
+            }
+        }
+
+        await DispatchUser.findByIdAndDelete(req.params.id);
+        res.json({ success: true, message: `User account '${user.username}' successfully deleted.` });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 

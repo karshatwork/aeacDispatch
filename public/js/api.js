@@ -5,7 +5,17 @@ if (_initialAppToken) {
   sessionStorage.setItem('dsp_app_token', _initialAppToken);
 }
 
+// Resolve the backend port dynamically:
+//  - In Electron: preload exposes serverPort from main process env (process.env.PORT)
+//  - In browser dev mode: use location.port (e.g. localhost:4000 → '4000')
+//  - Fallback: '4000'
+const _SERVER_PORT = (window.electronAPI && window.electronAPI.serverPort)
+  ? String(window.electronAPI.serverPort)
+  : (location.port || '4000');
+const _API_HOST = `http://127.0.0.1:${_SERVER_PORT}`;
+
 // public/js/api.js - API client with volatile in-memory session management
+let _cachedDesktopSecret = null;
 const api = {
   // In-memory token strictly bound to this process session
   token: null,
@@ -51,8 +61,22 @@ const api = {
     }
     headers['Content-Type'] = 'application/json';
 
+    if (!_cachedDesktopSecret && window.electronAPI && typeof window.electronAPI.getDesktopSecret === 'function') {
+      try {
+        _cachedDesktopSecret = await window.electronAPI.getDesktopSecret();
+      } catch (e) {}
+    }
+    if (_cachedDesktopSecret) {
+      headers['X-Desktop-Secret'] = _cachedDesktopSecret;
+    }
+
+    const apiBase = (window.location.protocol === 'file:' || window.location.protocol === 'app:')
+      ? _API_HOST
+      : '';
+    const targetUrl = endpoint.startsWith('http') ? endpoint : `${apiBase}${endpoint}`;
+
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetch(targetUrl, {
         ...options,
         headers
       });
@@ -239,6 +263,12 @@ const api = {
     return this.request(`/api/system/users/${userId}/reset-password`, {
       method: 'POST',
       body: JSON.stringify({ newPassword })
+    });
+  },
+
+  async deleteUser(userId) {
+    return this.request(`/api/system/users/${userId}`, {
+      method: 'DELETE'
     });
   },
 

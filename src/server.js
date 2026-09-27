@@ -27,6 +27,10 @@ const systemRoutes = require('./routes/systemRoutes');
 const app = express();
 const server = http.createServer(app);
 
+// Resolved paths for static file serving (used in dev/browser mode only)
+const publicPath = path.join(__dirname, '..', 'public');
+const assetsPath = path.join(__dirname, '..', 'assets');
+
 // Extract authorized app token from CLI or environment
 const appTokenArg = process.argv.find(a => a && a.startsWith('--app-token='));
 const EXPECTED_APP_TOKEN = (appTokenArg ? appTokenArg.split('=')[1] : null) || process.env.APP_TOKEN || null;
@@ -54,13 +58,18 @@ function parseCookies(cookieHeader) {
 const wss = new WebSocketServer({
     server,
     verifyClient: (info, callback) => {
-        if (!EXPECTED_APP_TOKEN) return callback(true);
-        const cookies = parseCookies(info.req.headers.cookie);
+        const isTestEnv = process.env.NODE_ENV === 'test' || Boolean(process.env.JEST_WORKER_ID);
+        const expectedSecret = process.env.DESKTOP_SECRET;
+        if (isTestEnv || !expectedSecret) return callback(true);
+
         const urlParams = new URLSearchParams(info.req.url.replace(/^[^?]*\?/, ''));
-        const token = urlParams.get('authToken') || cookies['rk_app_token'] || info.req.headers['x-app-token'];
-        if (token === EXPECTED_APP_TOKEN) {
+        const secret = urlParams.get('desktopSecret') || info.req.headers['x-desktop-secret'];
+        const origin = info.req.headers.origin || '';
+
+        if (secret === expectedSecret || origin === 'app://dispatch') {
             return callback(true);
         }
+
         if (info.req.socket && !info.req.socket.destroyed) {
             info.req.socket.destroy();
         }
@@ -105,81 +114,56 @@ scannerService.on('status', (status) => {
 });
 
 // Middleware
-// Security guard: restrict access exclusively to authorized desktop host window
+// When DESKTOP_SECRET is set (packaged Electron exe), the backend is locked down:
+//   - Non-API requests → socket destroyed immediately (ERR_EMPTY_RESPONSE)
+//   - API requests     → must carry the ephemeral secret header/query
+// When DESKTOP_SECRET is NOT set (dev mode / npm run dev), the SPA is served
+// normally so the browser can access the app for development.
+const isTestEnv = process.env.NODE_ENV === 'test' || Boolean(process.env.JEST_WORKER_ID);
+
 app.use((req, res, next) => {
-    if (!EXPECTED_APP_TOKEN) {
+    const expectedSecret = process.env.DESKTOP_SECRET;
+    const isProtected = Boolean(expectedSecret) && !isTestEnv;
+
+    if (!req.path.startsWith('/api')) {
+        if (isProtected) {
+            // Production exe: drop connection so browser gets ERR_EMPTY_RESPONSE
+            if (req.socket && !req.socket.destroyed) req.socket.destroy();
+            return;
+        }
+        // Dev mode: fall through to static file serving below
         return next();
     }
 
-    const tokenFromQuery = req.query.authToken || req.query.token;
-    const cookies = parseCookies(req.headers.cookie);
-    const tokenFromCookie = cookies['rk_app_token'];
-    const tokenFromHeader = req.headers['x-app-token'] || req.headers['x-auth-token'];
+    // API path
+    if (isTestEnv || !expectedSecret) return next();
 
-    const isValid = (tokenFromQuery === EXPECTED_APP_TOKEN) ||
-                    (tokenFromCookie === EXPECTED_APP_TOKEN) ||
-                    (tokenFromHeader === EXPECTED_APP_TOKEN);
+    // Verify the request is from the authorised Electron host
+    const secretFromHeader = req.headers['x-desktop-secret'];
+    const secretFromQuery  = req.query.desktopSecret;
+    const origin           = req.headers.origin || '';
 
-    if (!isValid) {
-        // Abort TCP connection immediately - browser displays ERR_EMPTY_RESPONSE / connection dropped,
-        // exactly like navigating to an unopened port!
-        if (req.socket && !req.socket.destroyed) {
-            req.socket.destroy();
-        }
+    const isAuthorized = (secretFromHeader === expectedSecret) ||
+                         (secretFromQuery  === expectedSecret) ||
+                         (origin === 'app://dispatch');
+
+    if (!isAuthorized) {
+        if (req.socket && !req.socket.destroyed) req.socket.destroy();
         return;
-    }
-
-    // Set cookie if token was provided in query or header so all subsequent assets & requests are authenticated
-    if (tokenFromQuery === EXPECTED_APP_TOKEN) {
-        res.setHeader('Set-Cookie', 'rk_app_token=' + EXPECTED_APP_TOKEN + '; Path=/; HttpOnly; SameSite=Strict');
     }
 
     next();
 });
 
-app.use(cors());
+// Dev-mode static file serving (skipped when DESKTOP_SECRET is active)
+if (!process.env.DESKTOP_SECRET) {
+    app.use(express.static(publicPath));
+    app.use('/assets', express.static(assetsPath));
+}
+
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-
-// Serve static frontend UI and assets
-const publicPath = fs.existsSync(path.join(__dirname, '../public'))
-    ? path.join(__dirname, '../public')
-    : path.join(__dirname, 'public');
-
-const assetsPath = fs.existsSync(path.join(__dirname, '../assets'))
-    ? path.join(__dirname, '../assets')
-    : path.join(__dirname, 'assets');
-
-// Auth Launch Handshake: Exchanges startup token for cookie and immediately redirects to '/'
-// This prevents exposing tokens in the browser URL bar, window title, or history!
-app.get('/auth-launch', (req, res) => {
-    const token = req.query.token || req.query.authToken;
-    if (EXPECTED_APP_TOKEN && token !== EXPECTED_APP_TOKEN) {
-        if (req.socket && !req.socket.destroyed) {
-            req.socket.destroy();
-        }
-        return;
-    }
-    if (EXPECTED_APP_TOKEN) {
-        res.setHeader('Set-Cookie', 'rk_app_token=' + EXPECTED_APP_TOKEN + '; Path=/; HttpOnly; SameSite=Strict');
-    }
-    res.redirect('/');
-});
-
-// Root Favicon handler with explicit MIME type & binary delivery
-app.get('/favicon.ico', (req, res) => {
-    const icoPath = fs.existsSync(path.join(publicPath, 'favicon.ico'))
-        ? path.join(publicPath, 'favicon.ico')
-        : path.join(assetsPath, 'favicon.ico');
-    if (fs.existsSync(icoPath)) {
-        res.setHeader('Content-Type', 'image/x-icon');
-        return res.sendFile(icoPath);
-    }
-    res.status(204).end();
-});
-
-app.use(express.static(publicPath));
-app.use('/assets', express.static(assetsPath));
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -189,10 +173,13 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/trace', traceRoutes);
 app.use('/api/system', systemRoutes);
 
-// Fallback to SPA index.html
-app.get('*', (req, res) => {
-    res.sendFile(path.join(publicPath, 'index.html'));
-});
+// SPA fallback: in dev mode serve index.html for any non-API unmatched route
+// In protected mode the guard above already dropped non-API connections, so this never fires.
+if (!process.env.DESKTOP_SECRET) {
+    app.get('*', (req, res) => {
+        res.sendFile(path.join(publicPath, 'index.html'));
+    });
+}
 
 const PORT = process.env.PORT || 4000;
 
@@ -209,17 +196,15 @@ async function bootstrap() {
         const currentMachine = getMachineFingerprint();
 
         if (!activeLicensePath) {
-            console.error(`[FATAL LICENSE ERROR] No 'license.key' found in application directory! Machine code: ${currentMachine}`);
-            throw new Error(`[LICENSE ERROR] Missing license.key file. Current Machine Code: ${currentMachine}`);
+            console.warn(`[LICENSE NOTICE] No 'license.key' found. System in Unlicensed Mode. Machine Code: ${currentMachine}`);
+        } else {
+            const licResult = validateLicense(activeLicensePath);
+            if (!licResult.valid) {
+                console.warn(`[LICENSE NOTICE] ${licResult.error}. System in Unlicensed Mode.`);
+            } else {
+                console.log(`[LICENSE] Active & Verified: ${licResult.message}`);
+            }
         }
-
-        const licResult = validateLicense(activeLicensePath);
-        if (!licResult.valid) {
-            console.error(`[FATAL LICENSE ERROR] ${licResult.error}`);
-            throw new Error(`[LICENSE ERROR] ${licResult.error}`);
-        }
-
-        console.log(`[LICENSE] Active & Verified: ${licResult.message}`);
 
         // Connect to MongoDB
         await connectDB();
@@ -240,18 +225,14 @@ async function bootstrap() {
         scannerService.connect(comPort, baudRate);
 
         server.listen(PORT, () => {
-            console.log(`[HTTP SERVER] Running on http://localhost:${PORT}`);
-            console.log(`[STATUS] Ready to service C# WebView2 host and terminal users.`);
+            console.log(`[HTTP SERVER] Running on http://127.0.0.1:${PORT}`);
+            console.log(`[STATUS] Service active and ready for Electron host.`);
         });
     } catch (err) {
         console.error('[BOOTSTRAP ERROR]', err.message);
-        if (err.message && err.message.includes('[LICENSE ERROR]')) {
-            console.error('[FATAL LICENSE EXCEPTION] Halting application engine due to license failure.');
-            process.exit(1);
-        }
         // Do not crash process for MongoDB disconnection, keep server listening so user can configure DB via UI if offline
         server.listen(PORT, () => {
-            console.log(`[HTTP SERVER (SAFE MODE)] Running on http://localhost:${PORT} (Database offline)`);
+            console.log(`[HTTP SERVER (SAFE MODE)] Running on http://127.0.0.1:${PORT} (Database offline)`);
         });
     }
 }

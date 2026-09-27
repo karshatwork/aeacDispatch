@@ -30,11 +30,75 @@ function setQuantityMode(mode) {
 // ============================================================================
 // INITIALIZATION & AUTH LIFECYCLE
 // ============================================================================
+function initTitlebarControls() {
+  const minBtn = document.getElementById('win-btn-minimize');
+  const maxBtn = document.getElementById('win-btn-maximize');
+  const closeBtn = document.getElementById('win-btn-close');
+  const maxIcon = document.getElementById('win-max-icon');
+  const titlebar = document.getElementById('app-titlebar');
+
+  if (minBtn) {
+    minBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (window.electronAPI && typeof window.electronAPI.minimizeWindow === 'function') {
+        window.electronAPI.minimizeWindow();
+      }
+    });
+  }
+
+  if (maxBtn) {
+    maxBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (window.electronAPI && typeof window.electronAPI.maximizeWindow === 'function') {
+        window.electronAPI.maximizeWindow();
+      }
+    });
+  }
+
+  if (closeBtn) {
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (window.electronAPI && typeof window.electronAPI.closeWindow === 'function') {
+        window.electronAPI.closeWindow();
+      }
+    });
+  }
+
+  if (titlebar) {
+    titlebar.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.titlebar-controls')) return;
+      if (window.electronAPI && typeof window.electronAPI.maximizeWindow === 'function') {
+        window.electronAPI.maximizeWindow();
+      }
+    });
+  }
+
+  if (window.electronAPI && typeof window.electronAPI.onWindowStateChange === 'function') {
+    window.electronAPI.onWindowStateChange((data) => {
+      if (maxIcon) {
+        if (data && data.isMaximized) {
+          maxIcon.className = 'ri-file-copy-line';
+          if (maxBtn) maxBtn.title = 'Restore Window';
+        } else {
+          maxIcon.className = 'ri-checkbox-blank-line';
+          if (maxBtn) maxBtn.title = 'Maximize Window';
+        }
+      }
+    });
+  }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
+  // Initialize native titlebar controls
+  initTitlebarControls();
+
   // Clean URL immediately so tokens are never exposed in window title, location bar, or history
   if (window.history && window.history.replaceState && window.location.search) {
-    window.history.replaceState(null, 'RK FG Dispatch - Industrial Dispatch Management System', window.location.pathname);
+    window.history.replaceState(null, 'RecordKeeper Dispatch - Dispatch Management System', window.location.pathname);
   }
+
+  // Start digital telemetry clock immediately (active on login and in-terminal)
+  startClock();
 
   // Initial health check & start 5-second telemetry polling
   checkSystemHealth();
@@ -46,6 +110,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   } else {
     showLoginScreen();
   }
+
+  // Synchronize audio button state with stored settings
+  updateAudioToggleUI();
 
   // Setup login form
   document.getElementById('login-form').addEventListener('submit', handleLogin);
@@ -90,6 +157,14 @@ async function checkSystemHealth() {
     if (res && res.database) {
       updateDbTelemetry(res.database);
     }
+    if (res && res.scanner) {
+      updateScannerStatusPill(res.scanner);
+    }
+    if (res && res.license) {
+      if (!res.license.valid) {
+        customModal.showLicenseModal(res.license.machineCode);
+      }
+    }
   } catch (err) {
     updateDbTelemetry({ isConnected: false, lastError: 'API Server offline / unreachable' });
   }
@@ -121,7 +196,7 @@ function updateFaviconState(isOffline) {
       ctx.putImageData(imgData, 0, 0);
       link.href = canvas.toDataURL('image/png');
     };
-  } catch (e) {}
+  } catch (e) { }
 }
 
 function updateDbTelemetry(db) {
@@ -134,14 +209,14 @@ function updateDbTelemetry(db) {
   if (db.isConnected) {
     updateFaviconState(false);
     if (led) led.className = 'status-led led-green';
-    if (text) text.textContent = db.isEmbedded ? 'DB (IN-MEMORY DEV)' : 'DB CONNECTED';
+    if (text) text.textContent = db.isEmbedded ? 'DATABASE (IN-MEMORY DEV)' : 'DATABASE ONLINE';
     if (chip) chip.title = `Connected to ${db.host || 'MongoDB'}/${db.name || ''} - Click for settings`;
     if (loginWarn) loginWarn.style.display = 'none';
     dismissGlobalAlarm();
   } else {
     updateFaviconState(true);
     if (led) led.className = 'status-led led-red';
-    if (text) text.textContent = 'DB OFFLINE';
+    if (text) text.textContent = 'DATABASE OFFLINE';
     const errorDetails = db.lastError || 'Connection refused';
     const targetUri = db.configuredUri || 'configured host';
     if (chip) chip.title = `DB Disconnected (${targetUri}): ${errorDetails}`;
@@ -166,15 +241,15 @@ function updateDbTelemetry(db) {
   }
 }
 
-function handleDbChipClick() {
+async function handleDbChipClick() {
   if (api.currentUser) {
     if (['manager', 'admin'].includes(api.currentUser.role)) {
       switchTab('tab-system');
     } else {
-      alert('Database telemetry can be configured by Managers and Administrators in System Settings.');
+      await customModal.alert('Database telemetry can be configured by Managers and Administrators in System Settings.', { title: 'ACCESS RESTRICTED', type: 'warning' });
     }
   } else {
-    alert('Please login to configure Database parameters in System Settings.');
+    await customModal.alert('Please login to configure Database parameters in System Settings.', { title: 'AUTHENTICATION REQUIRED', type: 'info' });
   }
 }
 
@@ -182,6 +257,16 @@ function handleDbChipClick() {
 function showLoginScreen(errorMessage = '') {
   document.getElementById('login-screen').style.display = 'flex';
   document.getElementById('terminal-shell').style.display = 'none';
+  const userWrap = document.querySelector('.titlebar-user-wrap');
+  if (userWrap) userWrap.style.display = 'none';
+  const dd = document.getElementById('titlebar-user-dropdown');
+  if (dd) dd.classList.remove('active');
+  const unameEl = document.getElementById('header-username');
+  if (unameEl) unameEl.textContent = '--';
+  const roleEl = document.getElementById('header-role');
+  if (roleEl) roleEl.textContent = '--';
+  const fullEl = document.getElementById('dropdown-username-full');
+  if (fullEl) fullEl.textContent = '--';
   const errBox = document.getElementById('login-error');
   if (errorMessage) {
     errBox.textContent = errorMessage;
@@ -198,6 +283,22 @@ async function handleLogin(e) {
   const errBox = document.getElementById('login-error');
 
   errBox.style.display = 'none';
+
+  if (!usernameInput || !passwordInput) {
+    sounds.init();
+    sounds.playViolation();
+    errBox.textContent = !usernameInput
+      ? 'Please enter operator username.'
+      : 'Please enter password.';
+    errBox.style.display = 'block';
+    if (!usernameInput) {
+      document.getElementById('login-username').focus();
+    } else {
+      document.getElementById('login-password').focus();
+    }
+    return;
+  }
+
   try {
     const res = await api.login(usernameInput, passwordInput);
     sounds.init();
@@ -225,10 +326,17 @@ async function initApp() {
   currentTab = 'tab-dispatch';
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('terminal-shell').style.display = 'flex';
+  const userWrap = document.querySelector('.titlebar-user-wrap');
+  if (userWrap) userWrap.style.display = 'block';
 
   const user = api.currentUser;
-  document.getElementById('header-username').textContent = user.username.toUpperCase();
-  document.getElementById('header-role').textContent = user.role.toUpperCase();
+  const unameEl = document.getElementById('header-username');
+  if (unameEl) unameEl.textContent = user.username.toUpperCase();
+  const roleEl = document.getElementById('header-role');
+  if (roleEl) roleEl.textContent = user.role.toUpperCase();
+  const fullEl = document.getElementById('dropdown-username-full');
+  if (fullEl) fullEl.textContent = `${user.username.toUpperCase()} (${user.role.toUpperCase()})`;
+  updateAudioToggleUI();
 
   // Role visibility: Hide tabs if unauthorized
   const userRole = user.role;
@@ -237,10 +345,12 @@ async function initApp() {
 
   const tabHoldReject = document.querySelector('[data-tab="tab-hold-reject"]');
   const tabReports = document.querySelector('[data-tab="tab-reports"]');
+  const tabUsers = document.querySelector('[data-tab="tab-users"]');
   const tabSystem = document.querySelector('[data-tab="tab-system"]');
 
   if (tabHoldReject) tabHoldReject.style.display = isSupervisorOrAbove ? 'flex' : 'none';
   if (tabReports) tabReports.style.display = isSupervisorOrAbove ? 'flex' : 'none';
+  if (tabUsers) tabUsers.style.display = isManagerOrAbove ? 'flex' : 'none';
   if (tabSystem) tabSystem.style.display = isManagerOrAbove ? 'flex' : 'none';
 
   // Connect WebSocket
@@ -259,12 +369,31 @@ async function initApp() {
 // ============================================================================
 // WEBSOCKET FOR HARDWARE COM SCANNER & TELEMETRY
 // ============================================================================
-function connectWebSocket() {
+async function connectWebSocket() {
   if (ws) return;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const appToken = sessionStorage.getItem('dsp_app_token') || new URLSearchParams(location.search).get('authToken');
-  const tokenQuery = appToken ? `?authToken=${encodeURIComponent(appToken)}` : '';
-  const wsUrl = `${protocol}//${location.host}${tokenQuery}`;
+
+  // Resolve host:port — in Electron use preload-injected port; in browser use location.host
+  const serverPort = (window.electronAPI && window.electronAPI.serverPort)
+    ? String(window.electronAPI.serverPort)
+    : (location.port || '4000');
+  const host = (location.host && location.host.length > 0 && location.protocol.startsWith('http'))
+    ? location.host
+    : `127.0.0.1:${serverPort}`;
+
+  let secret = '';
+  if (window.electronAPI && typeof window.electronAPI.getDesktopSecret === 'function') {
+    try {
+      secret = await window.electronAPI.getDesktopSecret();
+    } catch (e) { }
+  }
+
+  const params = new URLSearchParams();
+  if (appToken) params.set('authToken', appToken);
+  if (secret) params.set('desktopSecret', secret);
+  const q = params.toString() ? `?${params.toString()}` : '';
+  const wsUrl = `${protocol}//${host}${q}`;
 
   ws = new WebSocket(wsUrl);
 
@@ -292,10 +421,13 @@ function connectWebSocket() {
 function updateScannerStatusPill(status) {
   const pill = document.getElementById('header-scanner-status');
   if (!pill) return;
+  const port = status.activePort || 'COM3';
   if (status.isConnected) {
-    pill.innerHTML = `<span class="status-led led-green"></span> <span>${status.activePort}: ONLINE</span>`;
+    pill.innerHTML = `<span class="status-led led-green"></span> <span>SCANNER ONLINE</span>`;
+    pill.title = `Hardware Scanner (${port}) - Online & Ready`;
   } else {
-    pill.innerHTML = `<span class="status-led led-amber"></span> <span>${status.activePort}: WAITING</span>`;
+    pill.innerHTML = `<span class="status-led led-amber"></span> <span>SCANNER OFFLINE</span>`;
+    pill.title = `Hardware Scanner (${port}) - Waiting for connection`;
   }
 }
 
@@ -330,10 +462,13 @@ function switchTab(tabId) {
   else if (tabId === 'tab-inventory') loadInventoryView();
   else if (tabId === 'tab-hold-reject') loadHoldRejectView();
   else if (tabId === 'tab-reports') loadReportsView();
+  else if (tabId === 'tab-users') loadUsersTable();
   else if (tabId === 'tab-system') loadSystemView();
 }
 
+let _clockInterval = null;
 function startClock() {
+  if (_clockInterval) return;
   function update() {
     const el = document.getElementById('clock-display');
     if (el) {
@@ -342,17 +477,23 @@ function startClock() {
     }
   }
   update();
-  setInterval(update, 1000);
+  _clockInterval = setInterval(update, 1000);
+}
+
+function updateAudioToggleUI() {
+  const btn = document.getElementById('btn-audio-mute');
+  if (!btn) return;
+  const isMuted = sounds.muted;
+  btn.innerHTML = isMuted
+    ? '<i class="ri-volume-mute-line" style="color: #f87171; font-size: 15px;"></i> <span>Audio Feedback: MUTED</span>'
+    : '<i class="ri-volume-up-line" style="color: #38bdf8; font-size: 15px;"></i> <span>Audio Feedback: ON</span>';
+  btn.title = isMuted ? 'Unmute Sound' : 'Mute Sound';
 }
 
 function handleToggleAudio() {
-  const isMuted = sounds.toggleMute();
-  const btn = document.getElementById('btn-audio-mute');
-  if (btn) {
-    btn.innerHTML = isMuted ? '<i class="ri-volume-mute-line" style="color: #f87171;"></i>' : '<i class="ri-volume-up-line" style="color: #38bdf8;"></i>';
-    btn.title = isMuted ? 'Unmute Sound' : 'Mute Sound';
-  }
-  if (!isMuted) sounds.playClick();
+  sounds.toggleMute();
+  updateAudioToggleUI();
+  if (!sounds.muted) sounds.playClick();
 }
 
 // Global tactile click feedback
@@ -427,7 +568,7 @@ async function handleStartDispatch() {
   const qty = parseInt(document.getElementById('dispatch-target-qty').value, 10);
 
   if (!qty || qty <= 0) {
-    alert('Please enter a positive required quantity');
+    await customModal.alert('Please enter a positive required quantity', { title: 'INVALID QUANTITY', type: 'warning' });
     return;
   }
 
@@ -439,7 +580,7 @@ async function handleStartDispatch() {
     showBannerAlert(res.message, 'success');
   } catch (err) {
     sounds.playViolation();
-    alert('Could not start dispatch: ' + err.message);
+    await customModal.alert('Could not start dispatch: ' + err.message, { title: 'DISPATCH ERROR', type: 'danger' });
   }
 }
 
@@ -618,9 +759,9 @@ function triggerAlarmShake() {
 async function handleConfirmDispatch() {
   if (!activeTx) return;
 
-  const notes = prompt('Enter any dispatch notes (optional):', '');
+  const notes = await customModal.prompt('Enter any dispatch notes (optional):', { title: 'CONFIRM DISPATCH NOTES', placeholder: 'Optional notes' });
   try {
-    const res = await api.confirmDispatch(activeTx.dispatchId, notes);
+    const res = await api.confirmDispatch(activeTx.dispatchId, notes || '');
     sounds.playCompletion();
     const completedDispatchId = activeTx.dispatchId;
     activeTx = null;
@@ -631,23 +772,25 @@ async function handleConfirmDispatch() {
     openDispatchBill(completedDispatchId);
   } catch (err) {
     sounds.playViolation();
-    alert('Failed to confirm dispatch: ' + err.message);
+    await customModal.alert('Failed to confirm dispatch: ' + err.message, { title: 'CONFIRM FAILED', type: 'danger' });
   }
 }
 
 
 async function handleCancelDispatch() {
   if (!activeTx) return;
-  if (!confirm(`Are you sure you want to CANCEL dispatch session ${activeTx.dispatchId}?`)) return;
+  const ok = await customModal.confirm(`Are you sure you want to CANCEL dispatch session ${activeTx.dispatchId}?`, { title: 'CANCEL DISPATCH', danger: true, confirmText: 'YES, CANCEL' });
+  if (!ok) return;
 
-  const reason = prompt('Reason for cancellation:', 'Operator cancelled');
+  const reason = await customModal.prompt('Reason for cancellation:', { title: 'CANCELLATION REASON', defaultValue: 'Operator cancelled' });
+  if (reason === null) return;
   try {
     await api.cancelDispatch(activeTx.dispatchId, reason);
     activeTx = null;
     renderIdleDispatchUI();
     showBannerAlert('Dispatch session cancelled.', 'info');
   } catch (err) {
-    alert('Cancel failed: ' + err.message);
+    await customModal.alert('Cancel failed: ' + err.message, { title: 'CANCEL ERROR', type: 'danger' });
   }
 }
 
@@ -851,12 +994,12 @@ async function submitHoldModal() {
     closeModals();
     applyInventoryFilter();
   } catch (err) {
-    alert('Hold failed: ' + err.message);
+    await customModal.alert('Hold failed: ' + err.message, { title: 'HOLD ERROR', type: 'danger' });
   }
 }
 
 async function quickReleaseHold(boxId, batchNumber) {
-  const remarks = prompt(`Enter release remarks for Box #${batchNumber}:`, 'Inspected and cleared');
+  const remarks = await customModal.prompt(`Enter release remarks for Box #${batchNumber}:`, { title: 'RELEASE BOX FROM HOLD', defaultValue: 'Inspected and cleared' });
   if (remarks === null) return;
   try {
     await api.releaseHold(boxId, remarks);
@@ -864,7 +1007,7 @@ async function quickReleaseHold(boxId, batchNumber) {
     applyInventoryFilter();
     loadHoldRejectView();
   } catch (err) {
-    alert('Release failed: ' + err.message);
+    await customModal.alert('Release failed: ' + err.message, { title: 'RELEASE ERROR', type: 'danger' });
   }
 }
 
@@ -883,7 +1026,7 @@ async function submitRejectModal() {
     closeModals();
     applyInventoryFilter();
   } catch (err) {
-    alert('Reject failed: ' + err.message);
+    await customModal.alert('Reject failed: ' + err.message, { title: 'REJECT ERROR', type: 'danger' });
   }
 }
 
@@ -896,7 +1039,7 @@ function openReopenModal(boxId, batchNumber) {
 async function submitReopenModal() {
   const remarks = document.getElementById('modal-reopen-remarks').value.trim();
   if (!remarks || remarks.length < 5) {
-    alert('Mandatory Manager remarks required (minimum 5 characters)');
+    await customModal.alert('Mandatory Manager remarks required (minimum 5 characters)', { title: 'REOPEN RESTRICTION', type: 'warning' });
     return;
   }
 
@@ -907,7 +1050,7 @@ async function submitReopenModal() {
     applyInventoryFilter();
     loadHoldRejectView();
   } catch (err) {
-    alert('Reopen failed: ' + err.message);
+    await customModal.alert('Reopen failed: ' + err.message, { title: 'REOPEN ERROR', type: 'danger' });
   }
 }
 
@@ -982,7 +1125,7 @@ async function executeTrace(query) {
     sounds.playAlert();
   } catch (err) {
     sounds.playViolation();
-    alert('Trace lookup error: ' + err.message);
+    await customModal.alert('Trace lookup error: ' + err.message, { title: 'TRACE LOOKUP ERROR', type: 'danger' });
   }
 }
 
@@ -1051,9 +1194,10 @@ function renderDailyChart(chartData) {
       datasets: [{
         label: 'Boxes Dispatched',
         data: chartData.data,
-        backgroundColor: '#2563eb',
-        borderColor: '#3b82f6',
-        borderWidth: 1
+        backgroundColor: '#0284c7',
+        borderColor: '#0369a1',
+        borderWidth: 1,
+        borderRadius: 2
       }]
     },
     options: {
@@ -1061,8 +1205,8 @@ function renderDailyChart(chartData) {
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
-        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' }, beginAtZero: true }
+        x: { grid: { color: '#e2e8f0' }, ticks: { color: '#475569', font: { family: "'Inter', sans-serif", size: 10 } } },
+        y: { grid: { color: '#e2e8f0' }, ticks: { color: '#475569', font: { family: "'Inter', sans-serif", size: 10 } }, beginAtZero: true }
       }
     }
   });
@@ -1079,13 +1223,13 @@ function renderModelChart(chartData) {
       labels: chartData.labels,
       datasets: [{
         data: chartData.data,
-        backgroundColor: ['#2563eb', '#059669', '#d97706', '#0891b2', '#7c3aed']
+        backgroundColor: ['#0284c7', '#059669', '#d97706', '#6366f1', '#0ea5e9']
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#cbd5e1' } } }
+      plugins: { legend: { labels: { color: '#334155', font: { family: "'Inter', sans-serif", size: 11 } } } }
     }
   });
 }
@@ -1142,7 +1286,7 @@ async function openDispatchBill(dispatchId) {
 
     openModal('modal-dispatch-bill');
   } catch (err) {
-    alert('Failed to load bill: ' + err.message);
+    await customModal.alert('Failed to load bill: ' + err.message, { title: 'BILL LOAD ERROR', type: 'danger' });
   }
 }
 
@@ -1186,25 +1330,23 @@ async function loadSystemView() {
 
     // Load license
     loadLicenseInfo();
-
-    // Load users
-    loadUsersTable();
   } catch (err) {
     console.error('Failed to load system view:', err.message);
   }
 }
 
 async function handleSeedDummyData() {
-  if (!confirm('Populate/refresh rich dummy data? This will load available bins, held bins, rejected bins, and past dispatch history.')) return;
+  const ok = await customModal.confirm('Populate/refresh rich dummy data? This will load available bins, held bins, rejected bins, and past dispatch history.', { title: 'SEED TEST DATA' });
+  if (!ok) return;
   try {
     const res = await api.seedDummyData(true);
     sounds.playSuccess();
-    alert(res.message);
+    await customModal.alert(res.message, { title: 'SEED DATA SUCCESS', type: 'success' });
     loadSystemView();
     if (typeof loadInventoryView === 'function') loadInventoryView();
     if (typeof loadModelSelector === 'function') loadModelSelector();
   } catch (err) {
-    alert('Failed to seed dummy data: ' + err.message);
+    await customModal.alert('Failed to seed dummy data: ' + err.message, { title: 'SEED ERROR', type: 'danger' });
   }
 }
 
@@ -1217,14 +1359,16 @@ async function loadLicenseInfo() {
     const badge = document.getElementById('sys-lic-badge');
     const custEl = document.getElementById('sys-lic-customer');
     const expEl = document.getElementById('sys-lic-expiry');
+    const tierEl = document.getElementById('sys-lic-tier');
 
     if (lic.licensed && lic.details) {
       if (badge) {
         badge.className = 'badge badge-success';
         badge.textContent = 'ACTIVE';
       }
-      if (custEl) custEl.textContent = lic.details.customerName || '--';
+      if (custEl) custEl.textContent = lic.details.customerName || lic.details.licensee || '--';
       if (expEl) expEl.textContent = lic.details.expiresAt || '--';
+      if (tierEl) tierEl.textContent = (lic.details.tier || 'ENTERPRISE APPLIANCE').toUpperCase();
     } else {
       if (badge) {
         badge.className = 'badge badge-rejected';
@@ -1232,6 +1376,7 @@ async function loadLicenseInfo() {
       }
       if (custEl) custEl.textContent = 'UNLICENSED';
       if (expEl) expEl.textContent = lic.error || 'No valid license';
+      if (tierEl) tierEl.textContent = 'RESTRICTED';
     }
   } catch (e) {
     console.error('Could not load license info:', e.message);
@@ -1244,7 +1389,7 @@ async function handleActivateLicense() {
   const key = input ? input.value.trim() : '';
 
   if (!key) {
-    alert('Please paste a cryptographic license key string');
+    await customModal.alert('Please paste a cryptographic license key string', { title: 'LICENSE KEY REQUIRED', type: 'warning' });
     return;
   }
 
@@ -1255,19 +1400,19 @@ async function handleActivateLicense() {
     const res = await api.activateLicense(key);
     msgEl.textContent = res.message;
     msgEl.style.color = '#34d399';
-    alert(res.message);
+    await customModal.alert(res.message, { title: 'LICENSE ACTIVATION', type: 'success' });
     loadLicenseInfo();
     if (input) input.value = '';
   } catch (err) {
     msgEl.textContent = 'Activation Failed: ' + err.message;
     msgEl.style.color = '#f87171';
-    alert('License Activation Failed: ' + err.message);
+    await customModal.alert('License Activation Failed: ' + err.message, { title: 'ACTIVATION ERROR', type: 'danger' });
   }
 }
 
 async function testDatabaseConnection() {
   const uri = document.getElementById('sys-db-uri-input').value.trim();
-  if (!uri) return alert('Enter MongoDB URI');
+  if (!uri) return await customModal.alert('Enter MongoDB URI', { title: 'DATABASE URI REQUIRED', type: 'warning' });
 
   const resultBox = document.getElementById('sys-db-test-result');
   resultBox.textContent = 'Testing connection...';
@@ -1290,15 +1435,16 @@ async function testDatabaseConnection() {
 
 async function saveDatabaseConfig() {
   const uri = document.getElementById('sys-db-uri-input').value.trim();
-  if (!uri) return alert('Enter MongoDB URI');
-  if (!confirm('Update active MongoDB URI and reconnect?')) return;
+  if (!uri) return await customModal.alert('Enter MongoDB URI', { title: 'DATABASE URI REQUIRED', type: 'warning' });
+  const ok = await customModal.confirm('Update active MongoDB URI and reconnect?', { title: 'CONFIRM DB RECONFIGURATION', danger: true });
+  if (!ok) return;
 
   try {
     const res = await api.saveDatabaseConfig(uri);
-    alert(res.message);
+    await customModal.alert(res.message, { title: 'DATABASE CONFIG SAVED', type: 'success' });
     loadSystemView();
   } catch (err) {
-    alert('Save failed: ' + err.message);
+    await customModal.alert('Save failed: ' + err.message, { title: 'SAVE ERROR', type: 'danger' });
   }
 }
 
@@ -1345,7 +1491,7 @@ async function saveComPortConfig() {
       msgEl.style.color = '#059669';
       msgEl.textContent = res.message;
     } else {
-      alert(res.message);
+      await customModal.alert(res.message, { title: 'SERIAL CONFIG SAVED', type: 'success' });
     }
     const badge = document.getElementById('sys-com-status-badge');
     if (badge) {
@@ -1358,62 +1504,151 @@ async function saveComPortConfig() {
       msgEl.style.color = '#ef4444';
       msgEl.textContent = 'Configuration error: ' + err.message;
     } else {
-      alert('COM config failed: ' + err.message);
+      await customModal.alert('COM config failed: ' + err.message, { title: 'SERIAL CONFIG ERROR', type: 'danger' });
     }
   }
 }
 
+let _currentUsersList = [];
+
 async function loadUsersTable() {
   try {
     const res = await api.getUsers();
+    _currentUsersList = res.users || [];
+    const count = _currentUsersList.length;
     const tbody = document.getElementById('sys-users-tbody');
-    tbody.innerHTML = '';
+    if (tbody) tbody.innerHTML = '';
 
-    res.users.forEach(u => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td><strong>${u.username}</strong></td>
-        <td>${u.fullName}</td>
-        <td><span class="badge badge-verified">${u.role.toUpperCase()}</span></td>
-        <td>${u.active ? '<span style="color: #34d399;">ACTIVE</span>' : '<span style="color: #f87171;">INACTIVE</span>'}</td>
-        <td>
-          <button class="btn-chunky" onclick="resetUserPassword('${u._id}', '${u.username}')"><i class="ri-key-line"></i> RESET PWD</button>
-        </td>
-      `;
-      tbody.appendChild(tr);
-    });
+    const countChip = document.getElementById('sys-users-count-chip');
+    if (countChip) {
+      countChip.textContent = `${count} / 10 USERS`;
+      countChip.className = count >= 10 ? 'badge badge-rejected' : 'badge badge-available';
+    }
+
+    const warningBanner = document.getElementById('user-quota-warning');
+    if (warningBanner) {
+      warningBanner.style.display = count >= 10 ? 'block' : 'none';
+    }
+
+    const createBtn = document.getElementById('btn-create-user');
+    if (createBtn) {
+      if (count >= 10) {
+        createBtn.disabled = true;
+        createBtn.style.opacity = '0.5';
+        createBtn.style.cursor = 'not-allowed';
+        createBtn.title = 'Maximum capacity reached (10/10 users). Delete an account to create a new one.';
+      } else {
+        createBtn.disabled = false;
+        createBtn.style.opacity = '1';
+        createBtn.style.cursor = 'pointer';
+        createBtn.title = 'Add new operator account';
+      }
+    }
+
+    const currentUser = api.currentUser;
+    const isAdmin = currentUser && currentUser.role === 'admin';
+
+    if (tbody) {
+      if (_currentUsersList.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b;">No users registered.</td></tr>';
+      } else {
+        _currentUsersList.forEach(u => {
+          const tr = document.createElement('tr');
+          const isSelf = currentUser && (currentUser.id === u._id || currentUser.username.toLowerCase() === u.username.toLowerCase());
+          const deleteBtnHtml = (isAdmin && !isSelf)
+            ? `<button class="btn-chunky text-danger" style="margin-left: 6px;" onclick="handleDeleteUser('${u._id}', '${u.username}')"><i class="ri-delete-bin-line"></i> DELETE</button>`
+            : '';
+          tr.innerHTML = `
+            <td><strong>${u.username}</strong> ${isSelf ? '<span class="badge" style="background:#e0f2fe; color:#0284c7; font-size:9px; margin-left:4px;">YOU</span>' : ''}</td>
+            <td>${u.fullName}</td>
+            <td><span class="badge badge-verified">${u.role.toUpperCase()}</span></td>
+            <td>${u.active ? '<span style="color: #059669; font-weight:700;">ACTIVE</span>' : '<span style="color: #dc2626; font-weight:700;">INACTIVE</span>'}</td>
+            <td>
+              <button class="btn-chunky" onclick="resetUserPassword('${u._id}', '${u.username}')"><i class="ri-key-line"></i> RESET PWD</button>
+              ${deleteBtnHtml}
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+    }
   } catch (err) {
     console.error('Failed to load users:', err.message);
   }
 }
 
 async function handleCreateUser() {
-  const username = prompt('Enter new username:');
+  if (_currentUsersList && _currentUsersList.length >= 10) {
+    return await customModal.alert('Terminal operator capacity reached! A maximum of 10 users are allowed on this terminal. Please delete or deactivate an existing user before creating a new one.', {
+      title: 'USER QUOTA EXCEEDED (10/10)',
+      type: 'warning'
+    });
+  }
+
+  const username = await customModal.prompt('Enter new username:', { title: 'CREATE USER - USERNAME' });
   if (!username) return;
-  const fullName = prompt('Enter full name:');
+  const fullName = await customModal.prompt('Enter full name:', { title: 'CREATE USER - FULL NAME' });
   if (!fullName) return;
-  const password = prompt('Enter temporary password (min 6 chars):');
-  if (!password) return;
-  const role = prompt('Enter role (operator / supervisor / manager / admin):', 'operator');
+  const password = await customModal.prompt('Enter temporary password (min 6 chars):', { title: 'CREATE USER - PASSWORD', inputType: 'password' });
+  if (!password || password.length < 6) {
+    return await customModal.alert('Password must be at least 6 characters.', { title: 'PASSWORD TOO SHORT', type: 'warning' });
+  }
+  const role = await customModal.prompt('Enter role (operator / supervisor / manager / admin):', { title: 'CREATE USER - ROLE', defaultValue: 'operator' });
   if (!role) return;
 
   try {
     await api.createUser({ username, fullName, password, role: role.toLowerCase() });
-    alert(`User ${username} created successfully!`);
+    await customModal.alert(`User ${username} created successfully!`, { title: 'USER CREATED', type: 'success' });
     loadUsersTable();
   } catch (err) {
-    alert('Create user failed: ' + err.message);
+    await customModal.alert('Create user failed: ' + err.message, { title: 'CREATE USER ERROR', type: 'danger' });
+  }
+}
+
+async function handleDeleteUser(userId, username) {
+  const confirmed = await customModal.confirm(`Are you sure you want to permanently delete operator account "${username}"?`, {
+    title: 'CONFIRM DELETE OPERATOR',
+    danger: true
+  });
+  if (!confirmed) return;
+
+  try {
+    const res = await api.deleteUser(userId);
+    await customModal.alert(res.message || `User account '${username}' deleted.`, { title: 'ACCOUNT DELETED', type: 'success' });
+    loadUsersTable();
+  } catch (err) {
+    await customModal.alert('Delete failed: ' + err.message, { title: 'DELETE FAILED', type: 'danger' });
   }
 }
 
 async function resetUserPassword(userId, username) {
-  const newPwd = prompt(`Enter new password for ${username}:`);
-  if (!newPwd) return;
+  const newPwd = await customModal.prompt(`Enter new password for ${username}:`, { title: 'RESET PASSWORD', inputType: 'password' });
+  if (!newPwd || newPwd.length < 6) {
+    return await customModal.alert('Password must be at least 6 characters.', { title: 'PASSWORD TOO SHORT', type: 'warning' });
+  }
 
   try {
     await api.resetPassword(userId, newPwd);
-    alert(`Password reset for ${username}!`);
+    await customModal.alert(`Password reset for ${username}!`, { title: 'PASSWORD RESET', type: 'success' });
   } catch (err) {
-    alert('Password reset failed: ' + err.message);
+    await customModal.alert('Password reset failed: ' + err.message, { title: 'RESET FAILED', type: 'danger' });
   }
 }
+
+// ============================================================================
+// TITLEBAR OPERATOR DROPDOWN & ACTIONS
+// ============================================================================
+function toggleUserDropdown(e) {
+  if (e) e.stopPropagation();
+  if (!api.currentUser) return;
+  const dd = document.getElementById('titlebar-user-dropdown');
+  if (dd) dd.classList.toggle('active');
+}
+
+// Close dropdown on outside click
+document.addEventListener('click', (e) => {
+  const dd = document.getElementById('titlebar-user-dropdown');
+  if (dd && dd.classList.contains('active') && !e.target.closest('.titlebar-user-wrap')) {
+    dd.classList.remove('active');
+  }
+});

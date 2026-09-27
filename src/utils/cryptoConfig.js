@@ -76,6 +76,7 @@ function loadEncryptedConfig(filePath) {
 function findConfigFile(fileName, customDir) {
     const candidateDirs = [
         customDir,
+        process.resourcesPath ? path.dirname(process.resourcesPath) : null,
         process.cwd(),
         __dirname,
         path.resolve(__dirname, '..'),
