@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RK FG Dispatch - Industrial Dispatch Management System</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+  <!-- 100% Offline Bundled Remixicon Font (No CDNs, No Emojis, No Inline SVGs) -->
+  <link rel="stylesheet" href="/vendor/remixicon/remixicon.css">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+  <!-- ========================================================================
+       FULL-SCREEN MODERN SCADA LOGIN SCREEN
+       ======================================================================== -->
+  <div id="login-screen">
+    <div class="login-card">
+      <div class="login-header-logos">
+        <img src="/assets/logo-left.png" alt="Elektrosil" class="login-logo">
+        <img src="/assets/logo-right.png" alt="Mahindra" class="login-logo">
+      </div>
+      <div class="login-title">DISPATCH MANAGEMENT SYSTEM</div>
+      <div class="login-subtitle">STRICT FIFO GATEWAY</div>
+
+      
+      <div id="login-error" style="display: none; background: rgba(220, 38, 38, 0.2); border: 1px solid var(--color-danger); color: #f87171; padding: 8px 12px; font-family: var(--font-mono); font-size: 11px; margin-bottom: 14px; border-radius: 2px;"></div>
+      
+      <!-- DATABASE STATUS WARNING ON LOGIN SCREEN -->
+      <div id="login-db-warning" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #fca5a5; padding: 10px 12px; font-family: var(--font-mono); font-size: 11px; margin-bottom: 14px; border-radius: 4px; line-height: 1.4;">
+        <div style="font-weight: 700; display: flex; align-items: center; gap: 6px; color: #f87171;">
+          <i class="ri-alert-line" style="font-size: 14px;"></i> DATABASE OFFLINE (SAFE MODE)
+        </div>
+        <div id="login-db-warning-text" style="font-size: 10px; margin-top: 4px; color: #cbd5e1;">
+          Cannot reach MongoDB. Safe mode active.
+        </div>
+      </div>
+      
+      <form id="login-form">
+        <div class="form-group">
+          <label class="form-label"><i class="ri-user-line"></i> OPERATOR USERNAME</label>
+          <input type="text" id="login-username" class="form-control" placeholder="Enter username (e.g. admin)" required autofocus>
+        </div>
+        <div class="form-group" style="margin-bottom: 24px;">
+          <label class="form-label"><i class="ri-lock-line"></i> PASSWORD</label>
+          <input type="password" id="login-password" class="form-control" placeholder="Enter password" required>
+        </div>
+        <button type="submit" class="btn-scada btn-primary" style="width: 100%; padding: 11px; font-size: 13px;">
+          <i class="ri-login-box-line"></i> AUTHENTICATE TO GATEWAY
+        </button>
+      </form>
+      <div style="margin-top: 16px; text-align: center; font-size: 11px; color: #64748b; font-family: var(--font-mono);">
+        SYSTEM DEFAULTS: admin / admin123 &bull; op: operator1 / pass1234
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MAIN SCADA TERMINAL SHELL
+       ======================================================================== -->
+  <div id="terminal-shell">
+
+    <!-- LEFT NAVIGATION RAIL (230px) -->
+    <aside class="nav-rail">
+      <div class="rail-brand">
+        <img src="/assets/app.png" alt="RK FG Dispatch" style="width: 38px; height: 38px; object-fit: contain;">
+        <div>
+          <div class="rail-brand-text">RK FG DISPATCH</div>
+        </div>
+      </div>
+
+      <nav class="rail-menu">
+        <button class="rail-item active" data-tab="tab-dispatch" onclick="switchTab('tab-dispatch')">
+          <i class="ri-truck-line"></i> DISPATCH TERMINAL
+        </button>
+        <button class="rail-item" data-tab="tab-inventory" onclick="switchTab('tab-inventory')">
+          <i class="ri-inbox-line"></i> INVENTORY & STATUS
+        </button>
+        <button class="rail-item" data-tab="tab-hold-reject" onclick="switchTab('tab-hold-reject')">
+          <i class="ri-alert-line"></i> HOLD / REJECT DESK
+        </button>
+        <button class="rail-item" data-tab="tab-traceability" onclick="switchTab('tab-traceability')">
+          <i class="ri-search-eye-line"></i> BOX TRACEABILITY
+        </button>
+        <button class="rail-item" data-tab="tab-reports" onclick="switchTab('tab-reports')">
+          <i class="ri-bar-chart-grouped-line"></i> REPORTS & ANALYTICS
+        </button>
+        <button class="rail-item" data-tab="tab-system" onclick="switchTab('tab-system')">
+          <i class="ri-settings-4-line"></i> SYSTEM & USERS
+        </button>
+      </nav>
+
+
+      <div class="rail-footer">
+        <div class="rail-user-pill">
+          <div class="rail-user-info">
+            <div class="rail-avatar"><i class="ri-user-line"></i></div>
+            <div>
+              <div id="header-username" class="rail-user-name">ADMIN</div>
+              <div id="header-role" class="rail-user-role">ADMINISTRATOR</div>
+            </div>
+          </div>
+        </div>
+        <div class="rail-actions">
+          <button id="btn-audio-mute" class="hud-icon-btn" style="flex:1;" onclick="handleToggleAudio()" title="Toggle Sound Feedback">
+            <i class="ri-volume-up-line"></i>
+          </button>
+          <button class="btn-scada btn-danger" style="flex:2; padding: 6px 10px; font-size: 11px;" onclick="handleLogout()">
+            <i class="ri-logout-box-r-line"></i> LOGOUT
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- MAIN STAGE -->
+    <div class="main-stage">
+
+      <!-- TOP TELEMETRY HUD BAR -->
+      <header class="telemetry-hud">
+        <div class="hud-logos">
+          <img src="/assets/logo-left.png" alt="Elektrosil" class="hud-logo">
+          <img src="/assets/logo-right.png" alt="Mahindra" class="hud-logo">
+        </div>
+
+
+
+        <!-- HARDWARE STATUS CHIPS -->
+        <div class="hud-controls">
+          <div id="header-scanner-status" class="hud-chip" title="Hardware COM Scanner Telemetry">
+            <span class="status-led led-green"></span>
+            <span id="header-scanner-text">COM3 ONLINE</span>
+          </div>
+          <div id="header-db-chip" class="hud-chip" onclick="handleDbChipClick()" style="cursor: pointer;" title="Database Telemetry - Click for Details">
+            <span id="header-db-led" class="status-led led-green"></span>
+            <span id="header-db-text">DB SYNCED</span>
+          </div>
+          <div id="clock-display" class="hud-chip" style="color: var(--text-screen-cyan); min-width: 75px; justify-content: center;">
+            00:00:00
+          </div>
+        </div>
+      </header>
+
+      <!-- VIEWPORT -->
+      <main class="view-viewport">
+
+        <!-- GLOBAL ON-SCREEN SYSTEM ALARM / ERROR BANNER -->
+        <div id="global-system-alarm" class="system-alarm-banner" style="display: none;">
+          <div class="alarm-icon"><i class="ri-alarm-warning-line"></i></div>
+          <div class="alarm-content">
+            <div id="global-alarm-title" class="alarm-title">SYSTEM ALARM</div>
+            <div id="global-alarm-msg" class="alarm-msg">Database is offline.</div>
+          </div>
+          <div class="alarm-actions">
+            <button id="global-alarm-btn" class="btn-scada btn-danger" style="padding: 4px 10px; font-size: 11px;" onclick="handleAlarmAction()">RESOLVE</button>
+            <button class="btn-scada" style="padding: 4px 8px; font-size: 11px;" onclick="dismissGlobalAlarm()"><i class="ri-close-line"></i></button>
+          </div>
+        </div>
+
+
+        <!-- ======================================================================
+             VIEW 1: DISPATCH TERMINAL
+             ====================================================================== -->
+        <div id="tab-dispatch" class="view-content active">
+
+          <!-- PAGE HEADER STRIP -->
+          <div class="page-header-strip">
+            <div class="page-header-left">
+              <div class="page-header-icon"><i class="ri-truck-line"></i></div>
+              <div>
+                <h2 class="page-header-title">DISPATCH TERMINAL</h2>
+                <div class="page-header-desc">Active strict FIFO order execution, optical barcode bridge, and visual transfer dock</div>
+              </div>
+            </div>
+            <div class="page-header-actions">
+              <div class="page-kpi-chip">
+                <span class="kpi-label">GATE STATUS</span>
+                <span class="kpi-val" style="color: #059669;">LIVE READY</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- ACTIVE SCANNER INGEST STRIP -->
+          <div class="scanner-active-strip">
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <div class="scanner-icon-badge">
+                <i class="ri-barcode-box-line"></i>
+              </div>
+              <div>
+                <div style="font-weight: 700; font-size: 13px; color: var(--text-main);">HARDWARE SCANNER INGEST GATE</div>
+                <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);">LISTENING TO COM PORT SCANNER // SIMULATOR READY</div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <input type="text" id="test-scan-input" class="form-control" placeholder="Scan Barcode / QR or simulate manual code..." style="width: 320px;" onkeydown="if(event.key==='Enter') handleManualScanInput(this.value)">
+              <button class="btn-scada btn-primary" onclick="handleManualScanInput(document.getElementById('test-scan-input').value)">
+                <i class="ri-qr-scan-2-line"></i> SIMULATE SCAN
+              </button>
+            </div>
+          </div>
+
+          <!-- FIFO VIOLATION & STATUS ALERT BANNER -->
+          <div id="disp-alert-banner" style="display: none; padding: 12px 16px; border-radius: var(--border-radius); font-family: var(--font-mono); font-weight: 700; margin-bottom: 16px;"></div>
+
+          <!-- SETUP CARD (WHEN NO ACTIVE ORDER) -->
+          <div id="dispatch-setup-card" class="scada-panel">
+            <div class="scada-panel-header">
+              <span><i class="ri-add-box-line"></i> INITIATE NEW FIFO DISPATCH SESSION</span>
+            </div>
+            <div class="scada-panel-body">
+              <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 180px; gap: 16px; align-items: flex-end;">
+                <div class="form-group" style="margin-bottom: 0;">
+                  <label class="form-label">SELECT PRODUCT MODEL</label>
+                  <select id="dispatch-model-select" class="form-control"></select>
+                </div>
+                
+                <div class="form-group" style="margin-bottom: 0;">
+                  <label class="form-label">AVAILABLE STOCK (FIFO POOL)</label>
+                  <div style="background: #f1f5f9; border: 1px solid var(--border-light); padding: 7px 12px; border-radius: var(--border-radius-sm); display: flex; justify-content: space-between; align-items: center;">
+                    <span id="disp-avail-boxes" style="font-weight: 800; font-family: var(--font-mono); color: var(--color-primary);">0 BOXES</span>
+                    <span id="disp-avail-parts" style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);">0 PARTS</span>
+                  </div>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 0;">
+                  <label id="dispatch-qty-label" class="form-label">REQUIRED BOXES COUNT</label>
+                  <div style="display: flex; gap: 8px; align-items: center;">
+                    <div class="segmented-toggle">
+                      <button type="button" id="btn-mode-boxes" class="toggle-segment active" onclick="setQuantityMode('boxes')">BOXES</button>
+                      <button type="button" id="btn-mode-parts" class="toggle-segment" onclick="setQuantityMode('parts')">PARTS</button>
+                    </div>
+                    <input type="number" id="dispatch-target-qty" class="form-control" value="2" min="1" style="width: 90px; text-align: center; font-weight: 700; font-family: var(--font-mono);">
+                  </div>
+                </div>
+
+                <button class="btn-scada btn-success" style="height: 38px; width: 100%;" onclick="handleStartDispatch()">
+                  <i class="ri-play-line"></i> START DISPATCH
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ACTIVE TRANSACTION DUAL COCKPIT (WHEN DISPATCH ACTIVE) -->
+          <div id="dispatch-active-card" style="display: none;">
+            <div class="dispatch-control-deck">
+
+              <!-- LEFT COCKPIT: RADIAL GAUGE & NEXT TARGET RETICLE -->
+              <div>
+                <div class="hud-telemetry-card">
+                  <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; padding-bottom: 8px;">
+                    <span style="font-size: 11px; font-family: var(--font-mono); color: #94a3b8; font-weight: 700;">ORDER DISPATCH PROGRESS</span>
+                    <span class="badge badge-available">IN_PROGRESS</span>
+                  </div>
+
+                  <!-- RADIAL COMPLETION GAUGE -->
+                  <div class="gauge-wrap">
+                    <svg class="gauge-svg" viewBox="0 0 160 160">
+                      <circle class="gauge-bg-circle" cx="80" cy="80" r="70"></circle>
+                      <circle id="dispatch-radial-gauge" class="gauge-val-circle" cx="80" cy="80" r="70"></circle>
+                    </svg>
+                    <div class="gauge-center-text">
+                      <div id="dispatch-radial-pct" class="gauge-percent">0%</div>
+                      <div class="gauge-subtext">VERIFIED</div>
+                    </div>
+                  </div>
+
+                  <div style="display: flex; justify-content: space-around; width: 100%; border-top: 1px solid #1e293b; padding-top: 10px; margin-bottom: 12px; font-family: var(--font-mono); font-size: 11px;">
+                    <div>BOXES: <strong id="dispatch-radial-boxes" style="color: var(--text-screen-cyan);">0 / 0</strong></div>
+                    <div>PARTS: <strong id="dispatch-radial-parts" style="color: var(--text-screen-green);">0 / 0</strong></div>
+                  </div>
+
+                  <!-- NEXT REQUIRED FIFO TARGET RETICLE -->
+                  <div class="radar-target-reticle">
+                    <div class="reticle-corner reticle-tl"></div>
+                    <div class="reticle-corner reticle-tr"></div>
+                    <div class="reticle-corner reticle-bl"></div>
+                    <div class="reticle-corner reticle-br"></div>
+                    
+                    <div class="reticle-header">
+                      <span><i class="ri-radar-line"></i> NEXT TARGET SCAN</span>
+                      <span id="reticle-next-model">MD-X100</span>
+                    </div>
+                    <div id="reticle-next-batch" class="reticle-batch-num">BATCH #--</div>
+                    <div id="reticle-next-sub" class="reticle-sub">Closed: -- &bull; Qty: -- Parts</div>
+                  </div>
+
+                  <div style="width: 100%; margin-top: 14px;">
+                    <div style="font-family: var(--font-mono); font-size: 10px; color: #94a3b8; line-height: 1.8; margin-bottom: 10px;">
+                      <div>ORDER ID: <strong id="active-tx-id" style="color: #60a5fa;">DSP...</strong></div>
+                      <div>MODEL: <strong id="active-tx-model">...</strong></div>
+                      <div>TARGET: <strong id="active-tx-target">...</strong></div>
+                      <div>OPERATOR: <span id="active-tx-operator">...</span></div>
+                    </div>
+                    <button class="btn-scada btn-danger" style="width: 100%; padding: 6px;" onclick="handleCancelDispatch()">
+                      <i class="ri-close-circle-line"></i> CANCEL DISPATCH SESSION
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- RIGHT COCKPIT: ALLOCATED BOXES FIFO DECK -->
+              <div class="scada-panel" style="margin-bottom: 0;">
+                <div class="scada-panel-header">
+                  <span><i class="ri-list-check-2"></i> ALLOCATED BOXES (SCAN IN ANY ORDER)</span>
+                  <span id="dispatch-progress-text" style="font-family: var(--font-mono); color: var(--color-primary); font-weight: 700;">SCANNING IN PROGRESS</span>
+                </div>
+                <div class="scada-panel-body">
+                  <!-- ANIMATED VISUAL DISPATCH TRANSFER DOCK -->
+                  <div class="visual-transfer-deck">
+                    <div class="transfer-deck-grid">
+                      <!-- Infeed Queue -->
+                      <div>
+                        <div class="transfer-section-title">
+                          <span><i class="ri-inbox-unarchive-line"></i> FIFO INFEED QUEUE</span>
+                          <span id="transfer-infeed-count" style="color: #38bdf8;">0 PENDING</span>
+                        </div>
+                        <div id="transfer-infeed-lane" class="transfer-lane">
+                          <!-- Infeed boxes rendered here -->
+                        </div>
+                      </div>
+
+                      <!-- Scanning Ingest Bridge -->
+                      <div class="transfer-gate-bridge">
+                        <div class="gate-beam-icon">
+                          <i class="ri-scan-2-line"></i>
+                        </div>
+                        <i class="ri-arrow-right-double-line gate-beam-arrow"></i>
+                      </div>
+
+                      <!-- Loaded Dispatch Pallet -->
+                      <div>
+                        <div class="transfer-section-title">
+                          <span><i class="ri-truck-line"></i> OUTBOUND DOCK PALLET</span>
+                          <span id="transfer-dock-count" style="color: #34d399;">0 LOADED</span>
+                        </div>
+                        <div id="transfer-dock-lane" class="transfer-lane">
+                          <!-- Loaded boxes rendered here -->
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Linear Progress Bar -->
+                  <div style="height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin-bottom: 16px;">
+                    <div id="dispatch-progress-fill" style="height: 100%; background: linear-gradient(90deg, var(--color-primary), #10b981); width: 0%; transition: width 0.3s ease;"></div>
+                  </div>
+
+                  <!-- Table of Allocated Boxes -->
+                  <table class="scada-table" style="margin-bottom: 16px;">
+                    <thead>
+                      <tr>
+                        <th>RANK</th>
+                        <th>BOX / BATCH NO</th>
+                        <th>CLOSED AT (FIFO)</th>
+                        <th>PARTS</th>
+                        <th>BATCH QR PAYLOAD</th>
+                        <th>STATUS</th>
+                      </tr>
+                    </thead>
+                    <tbody id="fifo-pick-tbody">
+                      <tr><td colspan="6" style="text-align: center; color: #64748b;">No active dispatch session.</td></tr>
+                    </tbody>
+                  </table>
+
+                  <div style="display: flex; justify-content: flex-end;">
+                    <button id="btn-confirm-dispatch" class="btn-scada btn-success" style="padding: 10px 24px; font-size: 13px;" disabled onclick="handleConfirmDispatch()">
+                      <i class="ri-checkbox-circle-line"></i> CONFIRM & COMPLETE DISPATCH
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ======================================================================
+             VIEW 2: INVENTORY & STATUS
+             ====================================================================== -->
+        <div id="tab-inventory" class="view-content">
+
+          <!-- PAGE HEADER STRIP -->
+          <div class="page-header-strip">
+            <div class="page-header-left">
+              <div class="page-header-icon"><i class="ri-inbox-line"></i></div>
+              <div>
+                <h2 class="page-header-title">FINISHED GOODS INVENTORY & STATUS</h2>
+                <div class="page-header-desc">Real-time finished goods stock, FIFO aging queue, and bin status monitoring</div>
+              </div>
+            </div>
+            <div class="page-header-actions">
+              <button class="btn-scada btn-primary" onclick="applyInventoryFilter()">
+                <i class="ri-refresh-line"></i> REFRESH INVENTORY
+              </button>
+            </div>
+          </div>
+
+          <div class="scada-panel">
+            <div class="scada-panel-header">
+              <span><i class="ri-archive-line"></i> BOX INVENTORY MASTER & STATUS TRACKER</span>
+            </div>
+            <div class="scada-panel-body">
+              <!-- Filter Strip -->
+              <div style="background: #f8fafc; border: 1px solid var(--border-light); padding: 12px; border-radius: var(--border-radius-sm); margin-bottom: 16px; display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 140px;">
+                  <label class="form-label">MODEL</label>
+                  <select id="inv-filter-model" class="form-control">
+                    <option value="ALL">ALL MODELS</option>
+                  </select>
+                </div>
+                <div style="flex: 1; min-width: 140px;">
+                  <label class="form-label">STATUS</label>
+                  <select id="inv-filter-status" class="form-control">
+                    <option value="ALL">ALL STATUSES</option>
+                    <option value="available">AVAILABLE</option>
+                    <option value="hold">HOLD</option>
+                    <option value="rejected">REJECTED</option>
+                    <option value="dispatched">DISPATCHED</option>
+                  </select>
+                </div>
+                <div style="flex: 1.5; min-width: 200px;">
+                  <label class="form-label">SEARCH SERIAL / BOX NO / QR</label>
+                  <input type="text" id="inv-filter-search" class="form-control" placeholder="Search batch number, serials..." onkeydown="if(event.key==='Enter') applyInventoryFilter()">
+                </div>
+                <button class="btn-scada btn-primary" onclick="applyInventoryFilter()">
+                  <i class="ri-filter-3-line"></i> APPLY FILTERS
+                </button>
+              </div>
+
+              <!-- Inventory Table -->
+              <table class="scada-table">
+                <thead>
+                  <tr>
+                    <th>BOX / BATCH NO</th>
+                    <th>MODEL</th>
+                    <th>MACHINE / SHIFT</th>
+                    <th>CLOSED AT</th>
+                    <th>PARTS</th>
+                    <th>STATUS</th>
+                    <th>HOLD / REJECT / DISPATCH REF</th>
+                    <th>ACTIONS</th>
+                  </tr>
+                </thead>
+                <tbody id="inventory-tbody">
+                  <tr><td colspan="8" style="text-align: center; color: #64748b; padding: 20px;">Loading inventory data...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ======================================================================
+             VIEW 3: HOLD / REJECT DESK
+             ====================================================================== -->
+        <div id="tab-hold-reject" class="view-content">
+
+          <!-- PAGE HEADER STRIP -->
+          <div class="page-header-strip">
+            <div class="page-header-left">
+              <div class="page-header-icon" style="background: rgba(217, 119, 6, 0.1); border-color: rgba(217, 119, 6, 0.25); color: #d97706;">
+                <i class="ri-alert-line"></i>
+              </div>
+              <div>
+                <h2 class="page-header-title">QUARANTINE, HOLD & REJECT DESK</h2>
+                <div class="page-header-desc">Non-conforming bin containment, supervisor release desk, and manager reopen clearance</div>
+              </div>
+            </div>
+            <div class="page-header-actions">
+              <button class="btn-scada btn-primary" onclick="loadHoldRejectView()">
+                <i class="ri-refresh-line"></i> REFRESH DESK
+              </button>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <!-- Active Holds -->
+            <div class="scada-panel">
+              <div class="scada-panel-header">
+                <span><i class="ri-pause-circle-line"></i> ACTIVE BOXES ON HOLD (<span id="hold-count">0</span>)</span>
+                <span class="badge badge-hold">SUPERVISOR ACCESS</span>
+              </div>
+              <div class="scada-panel-body">
+                <table class="scada-table">
+                  <thead>
+                    <tr>
+                      <th>BOX NO</th>
+                      <th>HOLD ID</th>
+                      <th>REASON</th>
+                      <th>HELD BY</th>
+                      <th>ACTION</th>
+                    </tr>
+                  </thead>
+                  <tbody id="hold-tbody">
+                    <tr><td colspan="5" style="text-align: center; color: #64748b;">No boxes currently on hold.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Rejected Boxes -->
+            <div class="scada-panel">
+              <div class="scada-panel-header">
+                <span><i class="ri-close-circle-line"></i> REJECTED BOXES (<span id="reject-count">0</span>)</span>
+                <span class="badge badge-rejected">MANAGER APPROVAL TO REOPEN</span>
+              </div>
+              <div class="scada-panel-body">
+                <table class="scada-table">
+                  <thead>
+                    <tr>
+                      <th>BOX NO</th>
+                      <th>REJ ID</th>
+                      <th>REASON</th>
+                      <th>REJECTED BY</th>
+                      <th>ACTION</th>
+                    </tr>
+                  </thead>
+                  <tbody id="reject-tbody">
+                    <tr><td colspan="5" style="text-align: center; color: #64748b;">No boxes currently rejected.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ======================================================================
+             VIEW 4: BOX TRACEABILITY
+             ====================================================================== -->
+        <div id="tab-traceability" class="view-content">
+
+          <!-- PAGE HEADER STRIP -->
+          <div class="page-header-strip">
+            <div class="page-header-left">
+              <div class="page-header-icon" style="background: rgba(14, 165, 233, 0.1); border-color: rgba(14, 165, 233, 0.25); color: #0284c7;">
+                <i class="ri-search-eye-line"></i>
+              </div>
+              <div>
+                <h2 class="page-header-title">BOX & SERIAL TRACEABILITY AUDIT</h2>
+                <div class="page-header-desc">Instant forward and reverse genealogy, closed dates, and chronological lifecycle audit trail</div>
+              </div>
+            </div>
+            <div class="page-header-actions">
+              <div class="page-kpi-chip">
+                <span class="kpi-label">AUDIT PROTOCOL</span>
+                <span class="kpi-val" style="color: #0284c7;">STRICT VERIFIED</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="scada-panel">
+            <div class="scada-panel-header">
+              <span><i class="ri-search-line"></i> QUERY FINISHED GOODS BIN OR INDIVIDUAL SERIAL</span>
+            </div>
+            <div class="scada-panel-body">
+              <div style="background: #f8fafc; border: 1px solid var(--border-light); padding: 12px; border-radius: var(--border-radius-sm); margin-bottom: 16px; display: flex; gap: 10px;">
+                <input type="text" id="trace-query-input" class="form-control" placeholder="Enter Box No. (e.g. 101), Serial Number, or full Batch QR Data..." onkeydown="if(event.key==='Enter') executeTrace()">
+                <button class="btn-scada btn-primary" onclick="executeTrace()">
+                  <i class="ri-search-line"></i> TRACE LIFECYCLE
+                </button>
+              </div>
+
+              <div id="trace-results-container" style="display: none;">
+                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-light); padding-bottom: 8px; margin-bottom: 14px;">
+                  <div>
+                    <h3 id="trace-box-header" style="font-size: 16px; color: var(--text-main);">BOX DETAILS</h3>
+                    <div id="trace-box-meta" style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-top: 2px;"></div>
+                  </div>
+                  <div id="trace-box-status"></div>
+                </div>
+
+                <div style="font-weight: 700; font-size: 12px; margin-bottom: 12px; letter-spacing: 0.04em;">CHRONOLOGICAL LIFECYCLE AUDIT TRAIL:</div>
+                <div id="trace-timeline-items"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ======================================================================
+             VIEW 5: REPORTS & ANALYTICS
+             ====================================================================== -->
+        <div id="tab-reports" class="view-content">
+
+          <!-- PAGE HEADER STRIP -->
+          <div class="page-header-strip">
+            <div class="page-header-left">
+              <div class="page-header-icon" style="background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.25); color: #059669;">
+                <i class="ri-bar-chart-grouped-line"></i>
+              </div>
+              <div>
+                <h2 class="page-header-title">DISPATCH REPORTS & LOGISTICS ANALYTICS</h2>
+                <div class="page-header-desc">Operational throughput trends, model distribution metrics, and completed consignment logs</div>
+              </div>
+            </div>
+            <div class="page-header-actions">
+              <button class="btn-scada btn-primary" onclick="exportCsvReport()">
+                <i class="ri-download-2-line"></i> EXPORT CSV MANIFEST
+              </button>
+            </div>
+          </div>
+
+          <!-- Monthly KPI Tiles -->
+          <div class="grid-4" style="margin-bottom: 16px;">
+            <div class="stat-tile">
+              <div id="rep-boxes-month" class="stat-tile-val" style="color: var(--color-primary);">0</div>
+              <div class="stat-tile-lbl">DISPATCHED THIS MONTH (BOXES)</div>
+            </div>
+            <div class="stat-tile">
+              <div id="rep-parts-month" class="stat-tile-val" style="color: var(--color-success);">0</div>
+              <div class="stat-tile-lbl">DISPATCHED THIS MONTH (PARTS)</div>
+            </div>
+            <div class="stat-tile">
+              <div id="rep-active-holds" class="stat-tile-val" style="color: var(--color-warning);">0</div>
+              <div class="stat-tile-lbl">ACTIVE BOXES ON HOLD</div>
+            </div>
+            <div class="stat-tile">
+              <div id="rep-rejected-month" class="stat-tile-val" style="color: var(--color-danger);">0</div>
+              <div class="stat-tile-lbl">REJECTED (THIS MONTH)</div>
+            </div>
+          </div>
+
+          <!-- Charts Grid -->
+          <div class="grid-2" style="margin-bottom: 16px;">
+            <div class="scada-panel" style="margin-bottom: 0;">
+              <div class="scada-panel-header">
+                <span><i class="ri-bar-chart-fill"></i> DAILY DISPATCH VOLUME (<span id="rep-month-name">THIS MONTH</span>)</span>
+              </div>
+              <div class="scada-panel-body" style="height: 220px;">
+                <canvas id="chart-daily-volume"></canvas>
+              </div>
+            </div>
+            <div class="scada-panel" style="margin-bottom: 0;">
+              <div class="scada-panel-header">
+                <span><i class="ri-pie-chart-2-fill"></i> MODEL DISPATCH DISTRIBUTION</span>
+              </div>
+              <div class="scada-panel-body" style="height: 220px;">
+                <canvas id="chart-model-dist"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <!-- Historical Dispatch Log -->
+          <div class="scada-panel">
+            <div class="scada-panel-header">
+              <span><i class="ri-history-line"></i> HISTORICAL DISPATCH TRANSACTIONS</span>
+              <button class="btn-scada btn-primary" onclick="exportCsvReport()">
+                <i class="ri-download-2-line"></i> EXPORT CSV
+              </button>
+            </div>
+            <div class="scada-panel-body">
+              <table class="scada-table">
+                <thead>
+                  <tr>
+                    <th>TRANSACTION ID</th>
+                    <th>COMPLETED AT</th>
+                    <th>MODEL</th>
+                    <th>BOXES</th>
+                    <th>PARTS</th>
+                    <th>OPERATOR</th>
+                    <th>ACTION</th>
+                  </tr>
+                </thead>
+                <tbody id="history-tbody">
+                  <tr><td colspan="7" style="text-align: center; color: #64748b;">Loading history...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ======================================================================
+             VIEW 6: SYSTEM & USERS (MGR / ADMIN)
+             ====================================================================== -->
+        <div id="tab-system" class="view-content">
+
+          <!-- PAGE HEADER STRIP -->
+          <div class="page-header-strip">
+            <div class="page-header-left">
+              <div class="page-header-icon" style="background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.25); color: #6366f1;">
+                <i class="ri-settings-4-line"></i>
+              </div>
+              <div>
+                <h2 class="page-header-title">SYSTEM CONFIGURATION & HARDWARE GOVERNANCE</h2>
+                <div class="page-header-desc">Database parameters, full RS-232 serial communication engine, hardware licensing & user access control</div>
+              </div>
+            </div>
+            <div class="page-header-actions">
+              <button class="btn-scada btn-secondary" onclick="loadSystemView()">
+                <i class="ri-refresh-line"></i> REFRESH TELEMETRY
+              </button>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            
+            <!-- Database & Scanner Hardware Settings -->
+            <div>
+              <div class="scada-panel">
+                <div class="scada-panel-header">
+                  <span><i class="ri-database-2-line"></i> DATABASE CONNECTION CONFIGURATION</span>
+                </div>
+                <div class="scada-panel-body">
+                  <div style="font-family: var(--font-mono); font-size: 11px; margin-bottom: 12px; background: #f8fafc; padding: 8px 10px; border: 1px solid var(--border-light); border-radius: var(--border-radius-sm);">
+                    <div>ACTIVE DB: <strong id="sys-db-host" style="color: var(--color-primary);">localhost (plc_sticker)</strong></div>
+                    <div>SYNC WATERMARK: <span id="sys-sync-watermark">Loading...</span></div>
+                    <div>TOTAL SYNCED BOXES: <span id="sys-synced-count">0</span></div>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">MONGODB CONNECTION URI</label>
+                    <input type="text" id="sys-db-uri-input" class="form-control" value="mongodb://localhost:27017/plc_sticker">
+                  </div>
+                  <div id="sys-db-test-result" style="font-family: var(--font-mono); font-size: 11px; margin-bottom: 8px;"></div>
+                  <div style="display: flex; gap: 8px;">
+                    <button class="btn-scada btn-primary" onclick="testDatabaseConnection()">TEST CONNECTION</button>
+                    <button class="btn-scada btn-success" onclick="saveDatabaseConfig()">SAVE & RECONNECT</button>
+                  </div>
+                  <div style="margin-top: 12px; border-top: 1px dashed var(--border-light); padding-top: 10px;">
+                    <button class="btn-scada btn-secondary" style="width: 100%; border-color: #cbd5e1;" onclick="handleSeedDummyData()">
+                      <i class="ri-refresh-line"></i> POPULATE / RE-SEED RICH TEST DATASET
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Hardware Licensing & Security Panel -->
+              <div class="scada-panel">
+                <div class="scada-panel-header">
+                  <span><i class="ri-shield-keyhole-line"></i> HARDWARE LICENSE & SECURITY</span>
+                  <span id="sys-lic-badge" class="badge badge-success">ACTIVE</span>
+                </div>
+                <div class="scada-panel-body">
+                  <div style="font-family: var(--font-mono); font-size: 11px; margin-bottom: 12px; background: #f8fafc; padding: 8px 10px; border: 1px solid var(--border-light); border-radius: var(--border-radius-sm); line-height: 1.8;">
+                    <div>MACHINE FINGERPRINT: <strong id="sys-machine-code" style="color: var(--color-primary);">RKFG-XXXX-XXXX-XXXX</strong></div>
+
+                    <div>CUSTOMER: <strong id="sys-lic-customer" style="color: var(--color-primary);">--</strong></div>
+                    <div>EXPIRATION: <strong id="sys-lic-expiry" style="color: var(--color-success);">--</strong></div>
+                    <div>ENCRYPTED CONFIG: <span style="color: #7c3aed; font-weight: 700;">config.enc (AES-256-GCM Active)</span></div>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">INSTALL / RENEW LICENSE KEY</label>
+                    <textarea id="sys-license-input" class="form-control" rows="2" placeholder="Paste cryptographic base64 license key string here..." style="font-size: 10px; font-family: var(--font-mono);"></textarea>
+                  </div>
+                  <div id="sys-lic-msg" style="font-family: var(--font-mono); font-size: 11px; margin-bottom: 8px;"></div>
+                  <button class="btn-scada btn-primary" onclick="handleActivateLicense()">
+                    <i class="ri-key-2-line"></i> ACTIVATE NEW LICENSE KEY
+                  </button>
+                </div>
+              </div>
+
+              <!-- Complete Hardware Scanner RS-232 / COM Port Settings -->
+              <div class="scada-panel">
+                <div class="scada-panel-header">
+                  <span><i class="ri-usb-line"></i> HARDWARE SCANNER RS-232 / COM PARAMETERS</span>
+                  <span id="sys-com-status-badge" class="badge badge-available">COM READY</span>
+                </div>
+                <div class="scada-panel-body">
+                  <div class="serial-param-grid">
+                    <div class="serial-param-group" style="grid-column: span 2;">
+                      <label>SERIAL COM PORT</label>
+                      <select id="sys-com-select" class="form-control">
+                        <option value="COM3">COM3</option>
+                      </select>
+                    </div>
+                    <div class="serial-param-group">
+                      <label>BAUD RATE</label>
+                      <select id="sys-com-baud" class="form-control">
+                        <option value="9600" selected>9600</option>
+                        <option value="19200">19200</option>
+                        <option value="38400">38400</option>
+                        <option value="57600">57600</option>
+                        <option value="115200">115200</option>
+                      </select>
+                    </div>
+                    <div class="serial-param-group">
+                      <label>DATA BITS</label>
+                      <select id="sys-com-databits" class="form-control">
+                        <option value="8" selected>8 bits</option>
+                        <option value="7">7 bits</option>
+                        <option value="6">6 bits</option>
+                        <option value="5">5 bits</option>
+                      </select>
+                    </div>
+                    <div class="serial-param-group">
+                      <label>PARITY</label>
+                      <select id="sys-com-parity" class="form-control">
+                        <option value="none" selected>None</option>
+                        <option value="even">Even</option>
+                        <option value="odd">Odd</option>
+                        <option value="mark">Mark</option>
+                        <option value="space">Space</option>
+                      </select>
+                    </div>
+                    <div class="serial-param-group">
+                      <label>STOP BITS</label>
+                      <select id="sys-com-stopbits" class="form-control">
+                        <option value="1" selected>1 stop bit</option>
+                        <option value="1.5">1.5 stop bits</option>
+                        <option value="2">2 stop bits</option>
+                      </select>
+                    </div>
+                    <div class="serial-param-group" style="grid-column: span 2;">
+                      <label>LINE DELIMITER / TERMINATOR</label>
+                      <select id="sys-com-delimiter" class="form-control">
+                        <option value="CRLF" selected>CRLF (\r\n) - Standard Barcode</option>
+                        <option value="CR">CR (\r) - Carriage Return only</option>
+                        <option value="LF">LF (\n) - Line Feed only</option>
+                        <option value="TAB">TAB (\t) - Tabular Suffix</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div id="sys-com-msg" style="font-family: var(--font-mono); font-size: 11px; margin-bottom: 8px;"></div>
+                  <div style="display: flex; gap: 8px;">
+                    <button class="btn-scada btn-primary" style="flex: 1;" onclick="saveComPortConfig()">
+                      <i class="ri-plug-line"></i> SAVE & RECONNECT COM SCANNER
+                    </button>
+                    <button class="btn-scada btn-secondary" onclick="loadComPortsList()" title="Refresh Detected Windows Serial Devices">
+                      <i class="ri-refresh-line"></i>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- User Administration -->
+            <div class="scada-panel">
+              <div class="scada-panel-header">
+                <span><i class="ri-team-line"></i> DISPATCH SYSTEM USERS</span>
+                <button class="btn-scada btn-success" onclick="handleCreateUser()">
+                  <i class="ri-user-add-line"></i> + ADD USER
+                </button>
+              </div>
+              <div class="scada-panel-body">
+                <table class="scada-table">
+                  <thead>
+                    <tr>
+                      <th>USERNAME</th>
+                      <th>FULL NAME</th>
+                      <th>ROLE</th>
+                      <th>STATUS</th>
+                      <th>ACTION</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sys-users-tbody">
+                    <tr><td colspan="5" style="text-align: center; color: #64748b;">Loading users...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </main>
+
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODALS
+       ======================================================================== -->
+
+  <!-- HOLD MODAL -->
+  <div id="modal-hold" class="modal-overlay">
+    <div class="modal-card" style="max-width: 460px;">
+      <div class="modal-header">
+        <span id="modal-hold-title" style="font-weight: 700; font-size: 12px; letter-spacing: 0.04em;">PUT BOX ON HOLD</span>
+        <button class="hud-icon-btn" onclick="closeModals()"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">REASON FOR HOLD</label>
+          <select id="modal-hold-reason" class="form-control">
+            <option value="Visual Quality Inspection">Visual Quality Inspection</option>
+            <option value="Packaging / Label Defect">Packaging / Label Defect</option>
+            <option value="Lab Testing Pending">Lab Testing Pending</option>
+            <option value="Supervisor Discretion">Supervisor Discretion</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">SUPERVISOR REMARKS</label>
+          <input type="text" id="modal-hold-remarks" class="form-control" placeholder="Enter remarks...">
+        </div>
+      </div>
+      <div style="padding: 12px 18px; border-top: 1px solid var(--border-light); background: #f8fafc; display: flex; justify-content: flex-end; gap: 8px;">
+        <button class="btn-scada btn-secondary" onclick="closeModals()">CANCEL</button>
+        <button class="btn-scada btn-warning" onclick="submitHoldModal()">CONFIRM HOLD</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- REJECT MODAL -->
+  <div id="modal-reject" class="modal-overlay">
+    <div class="modal-card" style="max-width: 460px;">
+      <div class="modal-header">
+        <span id="modal-reject-title" style="font-weight: 700; font-size: 12px; letter-spacing: 0.04em;">REJECT BOX</span>
+        <button class="hud-icon-btn" onclick="closeModals()"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">REJECTION DEFECT REASON</label>
+          <select id="modal-reject-reason" class="form-control">
+            <option value="Damaged QR / Barcode Sticker">Damaged QR / Barcode Sticker</option>
+            <option value="Defective Part Inside Box">Defective Part Inside Box</option>
+            <option value="Box Packaging Crushed">Box Packaging Crushed</option>
+            <option value="Quantity Mismatch">Quantity Mismatch</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">REJECTION REMARKS</label>
+          <input type="text" id="modal-reject-remarks" class="form-control" placeholder="Enter rejection details...">
+        </div>
+      </div>
+      <div style="padding: 12px 18px; border-top: 1px solid var(--border-light); background: #f8fafc; display: flex; justify-content: flex-end; gap: 8px;">
+        <button class="btn-scada btn-secondary" onclick="closeModals()">CANCEL</button>
+        <button class="btn-scada btn-danger" onclick="submitRejectModal()">CONFIRM REJECT</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MANAGER REOPEN MODAL -->
+  <div id="modal-reopen" class="modal-overlay">
+    <div class="modal-card" style="max-width: 500px;">
+      <div class="modal-header">
+        <span id="modal-reopen-title" style="font-weight: 700; font-size: 12px; letter-spacing: 0.04em;">MANAGER APPROVAL: REOPEN REJECTED BOX</span>
+        <button class="hud-icon-btn" onclick="closeModals()"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="modal-body">
+        <div style="background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 10px; border-radius: var(--border-radius-sm); font-size: 11px; margin-bottom: 12px; line-height: 1.6;">
+          <strong>GOVERNANCE PROTOCOL:</strong> Reopening a rejected box resets its status to <span style="color: var(--color-success); font-weight: 700;">AVAILABLE</span> in the FIFO queue. Your Manager identity and timestamp are recorded in the immutable audit trail.
+        </div>
+        <div class="form-group">
+          <label class="form-label">MANDATORY MANAGER REMARKS</label>
+          <input type="text" id="modal-reopen-remarks" class="form-control" placeholder="e.g. Inspected, sticker replaced, QA cleared for dispatch">
+        </div>
+      </div>
+      <div style="padding: 12px 18px; border-top: 1px solid var(--border-light); background: #f8fafc; display: flex; justify-content: flex-end; gap: 8px;">
+        <button class="btn-scada btn-secondary" onclick="closeModals()">CANCEL</button>
+        <button class="btn-scada btn-primary" onclick="submitReopenModal()">AUTHORIZE REOPEN</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- OUTBOUND DISPATCH MANIFEST & ADVICE NOTE MODAL -->
+  <div id="modal-dispatch-bill" class="modal-overlay">
+    <div class="modal-card" style="width: 880px; height: 90vh;">
+      <div class="modal-header no-print">
+        <span style="font-weight: 700; font-size: 12px; letter-spacing: 0.04em;"><i class="ri-file-text-line"></i> OUTBOUND DISPATCH MANIFEST & ADVICE NOTE</span>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-scada btn-success" onclick="printDispatchBill()"><i class="ri-printer-line"></i> PRINT / SAVE MANIFEST</button>
+          <button class="hud-icon-btn" onclick="closeModals()"><i class="ri-close-line"></i></button>
+        </div>
+      </div>
+      
+      <div id="printable-bill" class="modal-body" style="background: #fff; color: #000; padding: 24px; font-family: Arial, sans-serif;">
+        <!-- Dual Logos -->
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 14px;">
+          <img src="/assets/logo-left.png" alt="Elektrosil" style="height: 44px; max-width: 170px; object-fit: contain;">
+          <div style="text-align: center;">
+            <h2 style="margin: 0; font-size: 16pt; font-weight: bold; letter-spacing: 0.5px;">DISPATCH MANIFEST</h2>
+            <div style="font-size: 10pt; font-weight: bold; color: #0284c7; margin-top: 4px;" id="bill-dispatch-id">DSP202609260001</div>
+          </div>
+          <img src="/assets/logo-right.png" alt="Mahindra" style="height: 44px; max-width: 170px; object-fit: contain;">
+        </div>
+
+        <!-- Meta Grid -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; border: 1px solid #cbd5e1; padding: 12px; margin-bottom: 14px; font-size: 10pt; line-height: 1.6;">
+          <div>
+            <div><strong>Dispatch Date:</strong> <span id="bill-date">...</span></div>
+            <div><strong>Model / Product:</strong> <span id="bill-model-name">...</span></div>
+            <div><strong>Customer Part No:</strong> <span id="bill-customer-part">...</span></div>
+          </div>
+          <div>
+            <div><strong>Internal Part ID:</strong> <span id="bill-internal-part">...</span></div>
+            <div><strong>Revision Info:</strong> <span id="bill-rev-info">...</span></div>
+            <div><strong>Dispatched By (Operator):</strong> <span id="bill-operator">...</span></div>
+            <div><strong>Total Dispatched:</strong> <strong id="bill-totals" style="color: #059669;">...</strong></div>
+          </div>
+        </div>
+
+        <!-- Dispatched Boxes & Full Serials Breakdown -->
+        <div style="font-weight: bold; font-size: 11pt; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; margin-bottom: 8px;">
+          DISPATCHED BOXES & SERIAL NUMBERS BREAKDOWN:
+        </div>
+        
+        <div id="bill-boxes-container" style="margin-bottom: 20px;"></div>
+
+        <!-- Sign-Off Blocks -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; border-top: 2px solid #cbd5e1; padding-top: 35px; margin-top: 25px; text-align: center; font-size: 10pt;">
+          <div><div style="border-top: 1px solid #000; padding-top: 4px; font-weight: bold;">PREPARED BY (OPERATOR)</div></div>
+          <div><div style="border-top: 1px solid #000; padding-top: 4px; font-weight: bold;">CHECKED BY (SUPERVISOR)</div></div>
+          <div><div style="border-top: 1px solid #000; padding-top: 4px; font-weight: bold;">AUTHORIZED (DISPATCH IN-CHARGE)</div></div>
+        </div>
+      </div>
+
+      <div style="padding: 12px 18px; border-top: 1px solid var(--border-light); background: #f8fafc; display: flex; justify-content: flex-end; gap: 8px;" class="no-print">
+        <button class="btn-scada btn-secondary" onclick="closeModals()">CLOSE</button>
+        <button class="btn-scada btn-success" onclick="printDispatchBill()"><i class="ri-printer-line"></i> PRINT MANIFEST / PDF</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Offline Bundled Scripts -->
+  <script src="/vendor/chart.umd.js"></script>
+  <script src="/js/audio.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
