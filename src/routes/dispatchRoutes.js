@@ -8,6 +8,10 @@ const fifoService = require('../services/fifoService');
 // GET /api/dispatch/active - Check for currently active in_progress dispatch session
 router.get('/active', authenticate, async (req, res) => {
     try {
+        const { getStatus } = require('../config/db');
+        if (!getStatus().isConnected) {
+            return res.json({ success: true, activeTransaction: null });
+        }
         const activeTx = await DispatchTransaction.findOne({ status: 'in_progress' });
         res.json({ success: true, activeTransaction: activeTx || null });
     } catch (err) {

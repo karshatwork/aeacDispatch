@@ -9,7 +9,7 @@ try {
     const parserMod = require('@serialport/parser-readline');
     ReadlineParser = parserMod.ReadlineParser;
 } catch (e) {
-    console.warn('[SCANNER] serialport module not yet loaded or running in mock mode');
+    console.warn('[SCANNER] serialport module not yet loaded');
 }
 
 class ScannerService extends EventEmitter {
@@ -22,7 +22,12 @@ class ScannerService extends EventEmitter {
         this.dataBits = parseInt(process.env.COM_DATA_BITS || '8', 10);
         this.stopBits = parseFloat(process.env.COM_STOP_BITS || '1');
         this.parity = process.env.COM_PARITY || 'none';
-        this.delimiter = process.env.COM_DELIMITER || '\r\n';
+        const rawDelim = process.env.COM_DELIMITER || 'CRLF';
+        if (rawDelim === 'CRLF' || rawDelim === '\\r\\n' || rawDelim === '\r\n') this.delimiter = '\r\n';
+        else if (rawDelim === 'CR' || rawDelim === '\\r' || rawDelim === '\r') this.delimiter = '\r';
+        else if (rawDelim === 'LF' || rawDelim === '\\n' || rawDelim === '\n') this.delimiter = '\n';
+        else if (rawDelim === 'TAB' || rawDelim === '\\t' || rawDelim === '\t') this.delimiter = '\t';
+        else this.delimiter = rawDelim;
         this.rtscts = process.env.COM_RTSCTS === 'true';
         this.isConnected = false;
         this.reconnectTimer = null;
@@ -54,7 +59,8 @@ class ScannerService extends EventEmitter {
     connect(options = {}) {
         if (!SerialPort || !ReadlineParser) {
             console.warn('[SCANNER] Cannot connect: SerialPort module not available');
-            return;
+            this.isConnected = false;
+            return Promise.resolve({ isConnected: false, error: 'SerialPort module not available' });
         }
 
         this.disconnect();
@@ -83,67 +89,72 @@ class ScannerService extends EventEmitter {
             if (options.rtscts !== undefined) this.rtscts = !!options.rtscts;
         }
 
-        try {
-            console.log(`[SCANNER] Opening COM port ${this.activePortPath} [${this.baudRate}-${this.dataBits}-${this.parity.toUpperCase()[0]}-${this.stopBits}] Delimiter: ${JSON.stringify(this.delimiter)}...`);
-            
-            this.port = new SerialPort({
-                path: this.activePortPath,
-                baudRate: this.baudRate,
-                dataBits: this.dataBits,
-                stopBits: this.stopBits,
-                parity: this.parity,
-                rtscts: this.rtscts,
-                autoOpen: false
-            });
-
-            this.parser = this.port.pipe(new ReadlineParser({ delimiter: this.delimiter }));
-
-            this.port.open((err) => {
-                if (err) {
-                    this.isConnected = false;
-                    console.warn(`[SCANNER WARNING] Could not open ${this.activePortPath}: ${err.message}`);
-                    this.scheduleReconnect();
-                    return;
-                }
-                this.isConnected = true;
-                console.log(`[SCANNER] Successfully connected to ${this.activePortPath}`);
-                this.emit('status', {
-                    isConnected: true,
-                    port: this.activePortPath,
+        return new Promise((resolve) => {
+            try {
+                console.log(`[SCANNER] Opening COM port ${this.activePortPath} [${this.baudRate}-${this.dataBits}-${this.parity.toUpperCase()[0]}-${this.stopBits}] Delimiter: ${JSON.stringify(this.delimiter)}...`);
+                
+                this.port = new SerialPort({
+                    path: this.activePortPath,
                     baudRate: this.baudRate,
                     dataBits: this.dataBits,
                     stopBits: this.stopBits,
-                    parity: this.parity
+                    parity: this.parity,
+                    rtscts: this.rtscts,
+                    autoOpen: false
                 });
-            });
 
-            this.parser.on('data', (line) => {
-                const scannedPayload = line.trim();
-                if (scannedPayload.length > 0) {
-                    console.log(`[SCANNER DATA] Received: ${scannedPayload}`);
-                    this.emit('scan', scannedPayload);
-                }
-            });
+                this.parser = this.port.pipe(new ReadlineParser({ delimiter: this.delimiter }));
 
-            this.port.on('error', (err) => {
+                this.port.open((err) => {
+                    if (err) {
+                        this.isConnected = false;
+                        console.warn(`[SCANNER WARNING] Could not open ${this.activePortPath}: ${err.message}`);
+                        this.emit('status', { isConnected: false, port: this.activePortPath, error: err.message });
+                        this.scheduleReconnect();
+                        return resolve({ isConnected: false, error: err.message });
+                    }
+                    this.isConnected = true;
+                    console.log(`[SCANNER] Successfully connected to ${this.activePortPath}`);
+                    this.emit('status', {
+                        isConnected: true,
+                        port: this.activePortPath,
+                        baudRate: this.baudRate,
+                        dataBits: this.dataBits,
+                        stopBits: this.stopBits,
+                        parity: this.parity
+                    });
+                    return resolve({ isConnected: true, port: this.activePortPath });
+                });
+
+                this.parser.on('data', (line) => {
+                    const scannedPayload = line.trim();
+                    if (scannedPayload.length > 0) {
+                        console.log(`[SCANNER DATA] Received: ${scannedPayload}`);
+                        this.emit('scan', scannedPayload);
+                    }
+                });
+
+                this.port.on('error', (err) => {
+                    this.isConnected = false;
+                    console.error(`[SCANNER PORT ERROR] ${err.message}`);
+                    this.emit('error', err);
+                    this.scheduleReconnect();
+                });
+
+                this.port.on('close', () => {
+                    this.isConnected = false;
+                    console.warn(`[SCANNER] Port ${this.activePortPath} closed`);
+                    this.emit('status', { isConnected: false, port: this.activePortPath });
+                    this.scheduleReconnect();
+                });
+
+            } catch (err) {
                 this.isConnected = false;
-                console.error(`[SCANNER PORT ERROR] ${err.message}`);
-                this.emit('error', err);
+                console.error(`[SCANNER EXCEPTION] ${err.message}`);
                 this.scheduleReconnect();
-            });
-
-            this.port.on('close', () => {
-                this.isConnected = false;
-                console.warn(`[SCANNER] Port ${this.activePortPath} closed`);
-                this.emit('status', { isConnected: false, port: this.activePortPath });
-                this.scheduleReconnect();
-            });
-
-        } catch (err) {
-            this.isConnected = false;
-            console.error(`[SCANNER EXCEPTION] ${err.message}`);
-            this.scheduleReconnect();
-        }
+                return resolve({ isConnected: false, error: err.message });
+            }
+        });
     }
 
     disconnect() {
@@ -175,20 +186,14 @@ class ScannerService extends EventEmitter {
         }, 5000);
     }
 
-    /**
-     * Emit a simulated scan (used for UI test wedge, development, or keyboard emulation)
-     */
-    simulateScan(payload) {
-        if (!payload) return;
-        console.log(`[SIMULATED SCAN] ${payload}`);
-        this.emit('scan', payload.trim());
-    }
+
 
     getStatus() {
+        let delimKey = 'CRLF';
         let delimDisplay = 'CRLF (\\r\\n)';
-        if (this.delimiter === '\r') delimDisplay = 'CR (\\r)';
-        else if (this.delimiter === '\n') delimDisplay = 'LF (\\n)';
-        else if (this.delimiter === '\t') delimDisplay = 'TAB (\\t)';
+        if (this.delimiter === '\r') { delimKey = 'CR'; delimDisplay = 'CR (\\r)'; }
+        else if (this.delimiter === '\n') { delimKey = 'LF'; delimDisplay = 'LF (\\n)'; }
+        else if (this.delimiter === '\t') { delimKey = 'TAB'; delimDisplay = 'TAB (\\t)'; }
 
         return {
             isConnected: this.isConnected,
@@ -197,7 +202,8 @@ class ScannerService extends EventEmitter {
             dataBits: this.dataBits,
             stopBits: this.stopBits,
             parity: this.parity,
-            delimiter: delimDisplay,
+            delimiter: delimKey,
+            delimiterDisplay: delimDisplay,
             rtscts: this.rtscts
         };
     }

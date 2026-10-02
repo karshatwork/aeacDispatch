@@ -1,1 +1,5 @@
 Review each page
+
+Box # and the view in box traceability to be verified with real data
+If either the batchId OR the physical batchQrData payload already exists in dispatch_boxes, ingestion is skipped.
+^ should verify with real data if batchId is also unique

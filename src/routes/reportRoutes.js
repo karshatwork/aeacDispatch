@@ -4,70 +4,128 @@ const router = express.Router();
 const { DispatchTransaction, DispatchBox } = require('../models');
 const { authenticate, requireRole } = require('../middleware/authMiddleware');
 
-// GET /api/reports/monthly - Monthly summary metrics & offline chart data
+// GET /api/reports/monthly - Summary metrics & chart data (supports optional dateFrom/dateTo/modelId filters)
 router.get('/monthly', authenticate, requireRole('supervisor'), async (req, res) => {
     try {
+        const { dateFrom, dateTo, modelId } = req.query;
         const now = new Date();
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
-        // Dispatches completed this month
-        const monthlyTxs = await DispatchTransaction.find({
-            status: 'completed',
-            completedAt: { $gte: startOfMonth, $lte: endOfMonth }
-        });
-
-        let dispatchedThisMonthBoxes = 0;
-        let dispatchedThisMonthParts = 0;
-        const dailyMap = {};
-        const modelMap = {};
-
-        for (const tx of monthlyTxs) {
-            dispatchedThisMonthBoxes += tx.allocatedBoxes.length;
-            dispatchedThisMonthParts += tx.dispatchedPartCount;
-
-            const dayKey = tx.completedAt.toISOString().slice(0, 10);
-            dailyMap[dayKey] = (dailyMap[dayKey] || 0) + tx.allocatedBoxes.length;
-
-            modelMap[tx.modelId] = (modelMap[tx.modelId] || 0) + tx.allocatedBoxes.length;
+        // Resolve date range: use query params if provided, otherwise default to current calendar month
+        let rangeStart, rangeEnd, rangeLabel;
+        if (dateFrom || dateTo) {
+            rangeStart = dateFrom ? new Date(dateFrom) : new Date(now.getFullYear(), now.getMonth(), 1);
+            rangeEnd = dateTo ? new Date(new Date(dateTo).setHours(23, 59, 59, 999)) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+            // Build a human-readable label for the range
+            const fmtDate = (d) => d.toLocaleDateString('default', { day: '2-digit', month: 'short', year: 'numeric' });
+            rangeLabel = `${fmtDate(rangeStart)} – ${fmtDate(rangeEnd)}`;
+        } else {
+            rangeStart = new Date(now.getFullYear(), now.getMonth(), 1);
+            rangeEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+            rangeLabel = now.toLocaleString('default', { month: 'long', year: 'numeric' });
         }
 
-        // Active boxes currently on hold
+        // Build dispatch transaction filter
+        const txFilter = {
+            status: 'completed',
+            completedAt: { $gte: rangeStart, $lte: rangeEnd }
+        };
+        if (modelId && modelId !== 'ALL') txFilter.modelId = modelId;
+
+        const filteredTxs = await DispatchTransaction.find(txFilter);
+
+        let dispatchedBoxes = 0;
+        let dispatchedParts = 0;
+        const dailyBoxMap = {};
+        const dailyPartsMap = {};
+        const modelBoxMap = {};
+        const modelPartsMap = {};
+
+        for (const tx of filteredTxs) {
+            dispatchedBoxes += tx.allocatedBoxes.length;
+            dispatchedParts += tx.dispatchedPartCount;
+            const dayKey = tx.completedAt.toISOString().slice(0, 10);
+            dailyBoxMap[dayKey] = (dailyBoxMap[dayKey] || 0) + tx.allocatedBoxes.length;
+            dailyPartsMap[dayKey] = (dailyPartsMap[dayKey] || 0) + tx.dispatchedPartCount;
+            modelBoxMap[tx.modelId] = (modelBoxMap[tx.modelId] || 0) + tx.allocatedBoxes.length;
+            modelPartsMap[tx.modelId] = (modelPartsMap[tx.modelId] || 0) + tx.dispatchedPartCount;
+        }
+
+        // Boxes rejected in range
+        const rejFilter = { status: 'rejected', rejectedAt: { $gte: rangeStart, $lte: rangeEnd } };
+        if (modelId && modelId !== 'ALL') rejFilter.modelId = modelId;
+        const rejectedBoxes = await DispatchBox.countDocuments(rejFilter);
+
+        // Active boxes currently on hold (not date-filtered – always live count)
         const activeHoldBoxes = await DispatchBox.countDocuments({ status: 'hold' });
 
-        // Boxes rejected this month
-        const rejectedThisMonthBoxes = await DispatchBox.countDocuments({
-            status: 'rejected',
-            rejectedAt: { $gte: startOfMonth, $lte: endOfMonth }
-        });
+        // Build volume time series chart:
+        // If range > 35 days, aggregate by month into a monthly bar series.
+        // If range <= 35 days, show granular daily line series spanning all days.
+        const msPerDay = 24 * 60 * 60 * 1000;
+        const totalDays = Math.round((rangeEnd - rangeStart) / msPerDay) + 1;
+        const isMonthly = totalDays > 35;
 
-        // Format daily chart data
-        const daysInMonth = endOfMonth.getDate();
-        const dailyLabels = [];
-        const dailyData = [];
+        const volumeLabels = [];
+        const volumeDataBoxes = [];
+        const volumeDataParts = [];
 
-        for (let d = 1; d <= daysInMonth; d++) {
-            const dayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-            dailyLabels.push(String(d).padStart(2, '0'));
-            dailyData.push(dailyMap[dayStr] || 0);
+        if (isMonthly) {
+            const monthlyBoxMap = {};
+            const monthlyPartsMap = {};
+            for (const tx of filteredTxs) {
+                if (tx.completedAt) {
+                    const mKey = tx.completedAt.toISOString().slice(0, 7); // 'YYYY-MM'
+                    monthlyBoxMap[mKey] = (monthlyBoxMap[mKey] || 0) + (tx.allocatedBoxes ? tx.allocatedBoxes.length : 0);
+                    monthlyPartsMap[mKey] = (monthlyPartsMap[mKey] || 0) + (tx.dispatchedPartCount || 0);
+                }
+            }
+
+            const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const curDate = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1);
+            const stopDate = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), 1);
+
+            while (curDate <= stopDate) {
+                const yyyy = curDate.getFullYear();
+                const mm = String(curDate.getMonth() + 1).padStart(2, '0');
+                const mKey = `${yyyy}-${mm}`;
+                volumeLabels.push(`${monthNames[curDate.getMonth()]} ${yyyy}`);
+                volumeDataBoxes.push(monthlyBoxMap[mKey] || 0);
+                volumeDataParts.push(monthlyPartsMap[mKey] || 0);
+                curDate.setMonth(curDate.getMonth() + 1);
+            }
+        } else {
+            for (let i = 0; i < totalDays; i++) {
+                const d = new Date(rangeStart.getTime() + i * msPerDay);
+                const dayStr = d.toISOString().slice(0, 10);
+                volumeLabels.push(`${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`);
+                volumeDataBoxes.push(dailyBoxMap[dayStr] || 0);
+                volumeDataParts.push(dailyPartsMap[dayStr] || 0);
+            }
         }
 
-        // Format model distribution chart data
-        const modelLabels = Object.keys(modelMap);
-        const modelData = Object.values(modelMap);
+        const modelLabels = Object.keys(modelBoxMap);
+        const modelDataBoxes = Object.values(modelBoxMap);
+        const modelDataParts = modelLabels.map(k => modelPartsMap[k] || 0);
 
         res.json({
             success: true,
             metrics: {
-                dispatchedThisMonthBoxes,
-                dispatchedThisMonthParts,
+                dispatchedThisMonthBoxes: dispatchedBoxes,
+                dispatchedThisMonthParts: dispatchedParts,
                 activeHoldBoxes,
-                rejectedThisMonthBoxes,
-                monthName: now.toLocaleString('default', { month: 'long', year: 'numeric' })
+                rejectedThisMonthBoxes: rejectedBoxes,
+                dispatchedThisMonthTxs: filteredTxs.length,
+                monthName: rangeLabel
             },
             charts: {
-                daily: { labels: dailyLabels, data: dailyData },
-                models: { labels: modelLabels, data: modelData }
+                daily: { 
+                    labels: volumeLabels, 
+                    dataBoxes: volumeDataBoxes, 
+                    dataParts: volumeDataParts,
+                    isMonthly,
+                    granularity: isMonthly ? 'monthly' : 'daily'
+                },
+                models: { labels: modelLabels, dataBoxes: modelDataBoxes, dataParts: modelDataParts }
             }
         });
     } catch (err) {

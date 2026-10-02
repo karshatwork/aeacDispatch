@@ -95,7 +95,7 @@ const appIcoPath = path.join(rootDir, 'assets', 'app.ico');
         'file-version': pkg.version,
         'product-version': pkg.version,
         'version-string': {
-          ProductName: 'RecordKeeper Dispatch - Dispatch Management System',
+          ProductName: 'RecordKeeper Dispatch',
           FileDescription: 'RecordKeeper Dispatch - Dispatch Management System',
           CompanyName: 'Karsh Industrial Digital Solutions',
           LegalCopyright: 'Copyright © 2026 Karsh',
@@ -234,7 +234,7 @@ module.exports = require('./server.jsc');
   let configObj = {
     NODE_ENV: 'production',
     PORT: '4000',
-    MONGO_URI: 'mongodb://localhost:27017/plc_sticker',
+    MONGO_URI: 'mongodb://localhost:27017/dispatch_db',
     JWT_SECRET: 'AEAC_INDUSTRIAL_SECRET_KEY_2026_DISPATCH_PROD',
     COM_PORT: 'COM3',
     COM_BAUD_RATE: '9600',

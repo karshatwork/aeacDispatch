@@ -11,7 +11,7 @@ const customModal = {
     const input = document.getElementById('custom-modal-input');
 
     if (btnCancel) {
-      btnCancel.onclick = () => this.handleAction(false);
+      btnCancel.onclick = () => this.handleCancel();
     }
     if (btnConfirm) {
       btnConfirm.onclick = () => {
@@ -31,7 +31,7 @@ const customModal = {
           this.handleAction(input.value);
         } else if (e.key === 'Escape') {
           e.preventDefault();
-          this.handleAction(null);
+          this.handleCancel();
         }
       });
     }
@@ -40,16 +40,25 @@ const customModal = {
       const backdrop = document.getElementById('custom-modal-backdrop');
       if (backdrop && backdrop.style.display !== 'none') {
         if (e.key === 'Escape') {
-          const btnCancel = document.getElementById('custom-modal-btn-cancel');
-          if (btnCancel && btnCancel.style.display !== 'none') {
-            this.handleAction(false);
-          }
+          this.handleCancel();
         }
+      }
+    });
+
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) {
+        this.handleCancel();
       }
     });
 
     // In-app License Modal wiring
     this.initLicenseModal();
+  },
+
+  handleCancel() {
+    const inputWrap = document.getElementById('custom-modal-input-wrap');
+    const isPrompt = inputWrap && inputWrap.style.display !== 'none';
+    this.handleAction(isPrompt ? null : false);
   },
 
   handleAction(value) {
@@ -90,27 +99,22 @@ const customModal = {
         btnConfirm.focus();
       }
 
-      // Icon & theme styling
+      // Icon & theme styling (SCADA Pilot LED Indicator)
       if (iconWrap && iconEl) {
+        iconWrap.style.background = '';
+        iconWrap.style.color = '';
+        iconWrap.style.borderColor = '';
         if (type === 'danger' || type === 'error') {
-          iconWrap.style.background = 'rgba(239, 68, 68, 0.15)';
-          iconWrap.style.color = '#ef4444';
-          iconWrap.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+          iconWrap.className = 'custom-modal-icon-wrap icon-danger';
           iconEl.className = 'ri-error-warning-line';
         } else if (type === 'success') {
-          iconWrap.style.background = 'rgba(34, 197, 94, 0.15)';
-          iconWrap.style.color = '#22c55e';
-          iconWrap.style.borderColor = 'rgba(34, 197, 94, 0.3)';
+          iconWrap.className = 'custom-modal-icon-wrap icon-success';
           iconEl.className = 'ri-checkbox-circle-line';
         } else if (type === 'warning') {
-          iconWrap.style.background = 'rgba(245, 158, 11, 0.15)';
-          iconWrap.style.color = '#f59e0b';
-          iconWrap.style.borderColor = 'rgba(245, 158, 11, 0.3)';
+          iconWrap.className = 'custom-modal-icon-wrap icon-warning';
           iconEl.className = 'ri-alert-line';
         } else {
-          iconWrap.style.background = 'rgba(56, 189, 248, 0.15)';
-          iconWrap.style.color = '#38bdf8';
-          iconWrap.style.borderColor = 'rgba(56, 189, 248, 0.3)';
+          iconWrap.className = 'custom-modal-icon-wrap icon-primary';
           iconEl.className = 'ri-information-line';
         }
       }
@@ -152,15 +156,14 @@ const customModal = {
       }
 
       if (iconWrap && iconEl) {
+        iconWrap.style.background = '';
+        iconWrap.style.color = '';
+        iconWrap.style.borderColor = '';
         if (isDanger) {
-          iconWrap.style.background = 'rgba(239, 68, 68, 0.15)';
-          iconWrap.style.color = '#ef4444';
-          iconWrap.style.borderColor = 'rgba(239, 68, 68, 0.3)';
-          iconEl.className = 'ri-question-line';
+          iconWrap.className = 'custom-modal-icon-wrap icon-danger';
+          iconEl.className = 'ri-error-warning-line';
         } else {
-          iconWrap.style.background = 'rgba(56, 189, 248, 0.15)';
-          iconWrap.style.color = '#38bdf8';
-          iconWrap.style.borderColor = 'rgba(56, 189, 248, 0.3)';
+          iconWrap.className = 'custom-modal-icon-wrap icon-primary';
           iconEl.className = 'ri-questionnaire-line';
         }
       }
@@ -207,14 +210,21 @@ const customModal = {
 
       if (btnConfirm) {
         btnConfirm.textContent = options.confirmText || 'PROCEED';
-        btnConfirm.className = 'btn-scada btn-primary';
+        btnConfirm.className = options.danger ? 'btn-scada btn-danger' : 'btn-scada btn-primary';
       }
 
       if (iconWrap && iconEl) {
-        iconWrap.style.background = 'rgba(56, 189, 248, 0.15)';
-        iconWrap.style.color = '#38bdf8';
-        iconWrap.style.borderColor = 'rgba(56, 189, 248, 0.3)';
-        iconEl.className = 'ri-edit-line';
+        if (options.danger) {
+          iconWrap.style.background = 'rgba(239, 68, 68, 0.15)';
+          iconWrap.style.color = '#ef4444';
+          iconWrap.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+          iconEl.className = 'ri-error-warning-line';
+        } else {
+          iconWrap.style.background = 'rgba(56, 189, 248, 0.15)';
+          iconWrap.style.color = '#38bdf8';
+          iconWrap.style.borderColor = 'rgba(56, 189, 248, 0.3)';
+          iconEl.className = 'ri-edit-line';
+        }
       }
 
       if (backdrop) backdrop.style.display = 'flex';
@@ -311,3 +321,15 @@ window.confirm = (msg) => {
   console.warn('Sync confirm called - prefer await customModal.confirm()');
   return true;
 };
+
+// Global EULA Modal Handlers
+window.openEulaModal = function () {
+  const modal = document.getElementById('eula-modal');
+  if (modal) modal.style.display = 'flex';
+};
+
+window.closeEulaModal = function () {
+  const modal = document.getElementById('eula-modal');
+  if (modal) modal.style.display = 'none';
+};
+

@@ -11,7 +11,7 @@ const dispatchBoxSchema = new mongoose.Schema({
     batchSize: { type: Number, required: true },
     completedCount: { type: Number, required: true },
     serialNumbers: [{ type: String }],
-    batchQrData: { type: String, required: true },
+    batchQrData: { type: String, required: true, index: true },
     closedAt: { type: Date, required: true, index: true },
     
     // Status is strictly one of 4 states:

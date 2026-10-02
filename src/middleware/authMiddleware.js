@@ -24,6 +24,18 @@ async function authenticate(req, res, next) {
         const token = authHeader.split(' ')[1];
         const decoded = jwt.verify(token, JWT_SECRET);
 
+        // Bypass database lookup if authenticated via service account
+        if (decoded.isServiceAccount && decoded.username === 'admin') {
+            req.user = {
+                id: decoded.userId || '000000000000000000000001',
+                username: 'admin',
+                role: 'admin',
+                fullName: decoded.fullName || 'System Administrator',
+                isServiceAccount: true
+            };
+            return next();
+        }
+
         const user = await DispatchUser.findById(decoded.userId);
         if (!user || !user.active) {
             return res.status(401).json({ success: false, error: 'User session invalid or deactivated' });

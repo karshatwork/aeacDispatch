@@ -1,7 +1,7 @@
 // src/routes/traceRoutes.js
 const express = require('express');
 const router = express.Router();
-const { DispatchBox, BoxLifecycleEvent, ProductModel } = require('../models');
+const { DispatchBox, BoxLifecycleEvent, ProductModel, DispatchUser } = require('../models');
 const { authenticate } = require('../middleware/authMiddleware');
 
 // GET /api/trace/:query - End-to-end box lifecycle traceability lookup
@@ -35,6 +35,23 @@ router.get('/:query', authenticate, async (req, res) => {
         // Fetch chronological lifecycle events
         const events = await BoxLifecycleEvent.find({ boxId: box._id }).sort({ timestamp: 1 });
 
+        // Resolve usernames to full names
+        const usernames = [...new Set(events.map(e => (e.performedBy || '').trim()).filter(Boolean))];
+        const users = await DispatchUser.find({ username: { $in: usernames.map(u => u.toLowerCase()) } }).select('username fullName').lean();
+        const userMap = {};
+        users.forEach(u => {
+            if (u.username) userMap[u.username.toLowerCase()] = u.fullName;
+        });
+
+        const resolveFullName = (username) => {
+            if (!username) return 'System';
+            const lower = username.toLowerCase();
+            if (lower === 'system_sync' || lower === 'system') return 'System Automation';
+            if (userMap[lower]) return userMap[lower];
+            // Format title-case words if not in DB (e.g. 'supervisor_qa' -> 'Supervisor QA')
+            return username.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        };
+
         res.json({
             success: true,
             box: {
@@ -43,6 +60,8 @@ router.get('/:query', authenticate, async (req, res) => {
                 modelId: box.modelId,
                 modelName: model ? model.modelName : box.modelId,
                 customerPartNo: model ? model.customerPartNo : 'N/A',
+                customerName: model ? model.customerName : 'Mahindra & Mahindra Powertrain',
+                internalPartId: model ? model.internalPartId : 'N/A',
                 machineNo: box.machineNo,
                 shiftCode: box.shiftCode,
                 batchDate: box.batchDate,
@@ -82,6 +101,7 @@ router.get('/:query', authenticate, async (req, res) => {
                 eventType: e.eventType,
                 referenceId: e.referenceId,
                 performedBy: e.performedBy,
+                performedByName: resolveFullName(e.performedBy),
                 userRole: e.userRole,
                 timestamp: e.timestamp,
                 reason: e.reason,

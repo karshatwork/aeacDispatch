@@ -21,15 +21,21 @@ router.get('/', authenticate, async (req, res) => {
         }
 
         if (search) {
-            const num = parseInt(search, 10);
-            if (!isNaN(num)) {
-                filter.$or = [
-                    { batchNumber: num },
-                    { batchQrData: { $regex: search, $options: 'i' } }
-                ];
-            } else {
-                filter.batchQrData = { $regex: search, $options: 'i' };
+            const trimmed = search.trim();
+            const num = parseInt(trimmed, 10);
+            const searchConditions = [
+                { batchQrData: { $regex: trimmed, $options: 'i' } },
+                { serialNumbers: { $regex: trimmed, $options: 'i' } },
+                { holdId: { $regex: trimmed, $options: 'i' } },
+                { rejectionId: { $regex: trimmed, $options: 'i' } },
+                { dispatchId: { $regex: trimmed, $options: 'i' } },
+                { holdReason: { $regex: trimmed, $options: 'i' } },
+                { rejectionReason: { $regex: trimmed, $options: 'i' } }
+            ];
+            if (!isNaN(num) && String(num) === trimmed) {
+                searchConditions.push({ batchNumber: num });
             }
+            filter.$or = searchConditions;
         }
 
         const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
@@ -53,6 +59,11 @@ router.get('/', authenticate, async (req, res) => {
 // GET /api/boxes/models - Get list of models and available stock counts
 router.get('/models', authenticate, async (req, res) => {
     try {
+        const { getStatus } = require('../config/db');
+        if (!getStatus().isConnected) {
+            return res.json({ success: true, models: [] });
+        }
+
         // Query read-only ProductModels from production DB
         const models = await ProductModel.find({ active: true }).sort({ modelId: 1 });
 
@@ -89,12 +100,85 @@ router.get('/models', authenticate, async (req, res) => {
     }
 });
 
+// GET /api/boxes/export-csv - Download current inventory as CSV (same filters as main list)
+router.get('/export-csv', authenticate, requireRole('supervisor'), async (req, res) => {
+    try {
+        const { modelId, status, dateFrom, dateTo, search } = req.query;
+        const filter = {};
+
+        if (modelId && modelId !== 'ALL') filter.modelId = modelId;
+        if (status && status !== 'ALL') filter.status = status;
+
+        if (dateFrom || dateTo) {
+            filter.closedAt = {};
+            if (dateFrom) filter.closedAt.$gte = new Date(dateFrom);
+            if (dateTo) filter.closedAt.$lte = new Date(new Date(dateTo).setHours(23, 59, 59, 999));
+        }
+
+        if (search) {
+            const trimmed = search.trim();
+            const num = parseInt(trimmed, 10);
+            const searchConditions = [
+                { batchQrData: { $regex: trimmed, $options: 'i' } },
+                { serialNumbers: { $regex: trimmed, $options: 'i' } },
+                { holdId: { $regex: trimmed, $options: 'i' } },
+                { rejectionId: { $regex: trimmed, $options: 'i' } },
+                { dispatchId: { $regex: trimmed, $options: 'i' } }
+            ];
+            if (!isNaN(num) && String(num) === trimmed) searchConditions.push({ batchNumber: num });
+            filter.$or = searchConditions;
+        }
+
+        const boxes = await DispatchBox.find(filter).sort({ closedAt: -1 });
+
+        const csvRows = ['Box#,Model,Machine,Produced At,Quantity,Batch Size,Status,Reference ID,Remarks,Part Serials'];
+        for (const b of boxes) {
+            const producedAt = b.closedAt ? b.closedAt.toISOString().slice(0, 16).replace('T', ' ') : '';
+            const refId = b.holdId || b.rejectionId || b.dispatchId || '';
+            
+            let remarksVal = '';
+            if (b.status === 'dispatched') {
+                remarksVal = b.dispatchedAt ? b.dispatchedAt.toISOString().slice(0, 19).replace('T', ' ') : (b.updatedAt ? b.updatedAt.toISOString().slice(0, 19).replace('T', ' ') : '');
+            } else if (b.status === 'hold' || b.status === 'rejected') {
+                const reason = b.holdReason || b.rejectionReason || '';
+                const rawRem = b.holdRemarks || b.rejectionRemarks || b.reopenRemarks || '';
+                if (reason && rawRem) remarksVal = `${reason}: ${rawRem}`;
+                else if (reason) remarksVal = reason;
+                else remarksVal = rawRem;
+            }
+
+            const partSerials = (b.serialNumbers && b.serialNumbers.length) ? b.serialNumbers.join(';') : '';
+            csvRows.push([
+                b.batchNumber,
+                `"${(b.modelId || '').replace(/"/g, '""')}"`,
+                b.machineNo || '',
+                producedAt,
+                b.completedCount || 0,
+                b.batchSize || 0,
+                b.status || '',
+                `"${refId.replace(/"/g, '""')}"`,
+                `"${remarksVal.replace(/"/g, '""')}"`,
+                `"${partSerials.replace(/"/g, '""')}"`
+            ].join(','));
+        }
+
+        res.header('Content-Type', 'text/csv');
+        res.attachment(`box_inventory_${new Date().toISOString().slice(0, 10)}.csv`);
+        res.send(csvRows.join('\r\n'));
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // POST /api/boxes/:id/hold - Mark box on hold (Supervisor and above)
 router.post('/:id/hold', authenticate, requireRole('supervisor'), async (req, res) => {
     try {
         const { reason, remarks } = req.body;
-        if (!reason) {
+        if (!reason || typeof reason !== 'string' || !reason.trim()) {
             return res.status(400).json({ success: false, error: 'Hold reason is required' });
+        }
+        if (!remarks || typeof remarks !== 'string' || !remarks.trim()) {
+            return res.status(400).json({ success: false, error: 'Supervisor remarks are mandatory' });
         }
 
         const box = await DispatchBox.findById(req.params.id);
@@ -177,8 +261,11 @@ router.post('/:id/release-hold', authenticate, requireRole('supervisor'), async 
 router.post('/:id/reject', authenticate, requireRole('supervisor'), async (req, res) => {
     try {
         const { reason, remarks } = req.body;
-        if (!reason) {
+        if (!reason || typeof reason !== 'string' || !reason.trim()) {
             return res.status(400).json({ success: false, error: 'Rejection reason is required' });
+        }
+        if (!remarks || typeof remarks !== 'string' || !remarks.trim()) {
+            return res.status(400).json({ success: false, error: 'Rejection remarks are mandatory' });
         }
 
         const box = await DispatchBox.findById(req.params.id);
@@ -227,7 +314,7 @@ router.post('/:id/reopen', authenticate, requireRole('manager'), async (req, res
         if (!remarks || remarks.trim().length < 5) {
             return res.status(400).json({
                 success: false,
-                error: 'Mandatory Manager remarks required (minimum 5 characters) to authorize reopening a rejected box.'
+                error: 'Mandatory remarks required (minimum 5 characters) to authorize reopening a rejected box.'
             });
         }
 

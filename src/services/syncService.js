@@ -53,8 +53,12 @@ async function performSync() {
         for (const batch of newClosedBatches) {
             if (!batch.closedAt) continue;
 
-            // Check if already in dispatch_boxes (idempotent)
-            const existing = await DispatchBox.findOne({ batchId: batch._id });
+            // Check if already in dispatch_boxes by batchId OR by batchQrData (idempotent)
+            const orConditions = [{ batchId: batch._id }];
+            if (batch.batchQrData) {
+                orConditions.push({ batchQrData: batch.batchQrData });
+            }
+            const existing = await DispatchBox.findOne({ $or: orConditions });
             if (!existing) {
                 const newBox = await DispatchBox.create({
                     batchId: batch._id,
@@ -132,7 +136,11 @@ async function manualHistoricalSync(startDate, endDate, performedBy = 'MANAGER')
     for (const batch of batches) {
         if (!batch.closedAt) continue;
 
-        const existing = await DispatchBox.findOne({ batchId: batch._id });
+        const orConditions = [{ batchId: batch._id }];
+        if (batch.batchQrData) {
+            orConditions.push({ batchQrData: batch.batchQrData });
+        }
+        const existing = await DispatchBox.findOne({ $or: orConditions });
         if (!existing) {
             const newBox = await DispatchBox.create({
                 batchId: batch._id,
@@ -174,7 +182,7 @@ async function manualHistoricalSync(startDate, endDate, performedBy = 'MANAGER')
 /**
  * Start recurring sync loop
  */
-function startSyncWorker(intervalMs = 3000) {
+function startSyncWorker(intervalMs = 300000) { // 5 minutes default (300,000 ms)
     if (syncTimer) clearInterval(syncTimer);
     console.log(`[SYNC WORKER] Started background watcher (every ${intervalMs}ms)`);
     performSync().catch(err => console.error('[SYNC WORKER INITIAL FAILED]', err.message));

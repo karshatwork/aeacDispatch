@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Clean URL immediately so tokens are never exposed in window title, location bar, or history
   if (window.history && window.history.replaceState && window.location.search) {
-    window.history.replaceState(null, 'RecordKeeper Dispatch - Dispatch Management System', window.location.pathname);
+    window.history.replaceState(null, 'RecordKeeper Dispatch', window.location.pathname);
   }
 
   // Start digital telemetry clock immediately (active on login and in-terminal)
@@ -116,6 +116,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Setup login form
   document.getElementById('login-form').addEventListener('submit', handleLogin);
+
+  // Initialize custom SCADA dropdowns everywhere
+  if (window.scadaDropdown) {
+    window.scadaDropdown.initAll();
+  }
 });
 
 // ============================================================================
@@ -155,7 +160,7 @@ async function checkSystemHealth() {
   try {
     const res = await api.request('/api/system/health');
     if (res && res.database) {
-      updateDbTelemetry(res.database);
+      updateDbTelemetry(res.database, res.sync);
     }
     if (res && res.scanner) {
       updateScannerStatusPill(res.scanner);
@@ -199,20 +204,30 @@ function updateFaviconState(isOffline) {
   } catch (e) { }
 }
 
-function updateDbTelemetry(db) {
+function updateDbTelemetry(db, sync) {
+  window.lastKnownDbConnected = !!db.isConnected;
   const chip = document.getElementById('header-db-chip');
   const led = document.getElementById('header-db-led');
   const text = document.getElementById('header-db-text');
   const loginWarn = document.getElementById('login-db-warning');
   const loginWarnText = document.getElementById('login-db-warning-text');
 
+  const dbHostEl = document.getElementById('sys-db-host');
+  const dbWatermarkEl = document.getElementById('sys-sync-watermark');
+  const dbSyncedCountEl = document.getElementById('sys-synced-count');
+
   if (db.isConnected) {
     updateFaviconState(false);
     if (led) led.className = 'status-led led-green';
     if (text) text.textContent = db.isEmbedded ? 'DATABASE (IN-MEMORY DEV)' : 'DATABASE ONLINE';
-    if (chip) chip.title = `Connected to ${db.host || 'MongoDB'}/${db.name || ''} - Click for settings`;
+    if (chip) chip.title = `Connected to ${db.host || 'MongoDB'}/${db.name || ''}`;
     if (loginWarn) loginWarn.style.display = 'none';
     dismissGlobalAlarm();
+
+    if (dbHostEl) {
+      dbHostEl.style.color = 'var(--color-primary)';
+      dbHostEl.textContent = `${db.host || 'localhost'} (${db.name || 'default'})`;
+    }
   } else {
     updateFaviconState(true);
     if (led) led.className = 'status-led led-red';
@@ -221,11 +236,19 @@ function updateDbTelemetry(db) {
     const targetUri = db.configuredUri || 'configured host';
     if (chip) chip.title = `DB Disconnected (${targetUri}): ${errorDetails}`;
 
+    if (dbHostEl) {
+      dbHostEl.style.color = '#ef4444';
+      dbHostEl.textContent = 'OFFLINE / DISCONNECTED';
+    }
+    if (dbWatermarkEl) {
+      dbWatermarkEl.textContent = 'Database offline';
+    }
+
     // Show warning on login screen
     if (loginWarn) {
       loginWarn.style.display = 'block';
       if (loginWarnText) {
-        loginWarnText.textContent = `Cannot reach ${targetUri} (${errorDetails}). Safe Mode active. Login requires a working database.`;
+        loginWarnText.textContent = `Cannot reach ${targetUri} (${errorDetails}). Safe Mode active. Database connection required for production operations.`;
       }
     }
 
@@ -239,18 +262,19 @@ function updateDbTelemetry(db) {
       );
     }
   }
+
+  if (sync) {
+    if (dbWatermarkEl && db.isConnected) {
+      dbWatermarkEl.textContent = sync.watermark ? new Date(sync.watermark).toLocaleString() : 'Live (Initialized)';
+    }
+    if (dbSyncedCountEl) {
+      dbSyncedCountEl.textContent = (sync.totalSyncedBoxes != null) ? sync.totalSyncedBoxes : '0';
+    }
+  }
 }
 
-async function handleDbChipClick() {
-  if (api.currentUser) {
-    if (['manager', 'admin'].includes(api.currentUser.role)) {
-      switchTab('tab-system');
-    } else {
-      await customModal.alert('Database telemetry can be configured by Managers and Administrators in System Settings.', { title: 'ACCESS RESTRICTED', type: 'warning' });
-    }
-  } else {
-    await customModal.alert('Please login to configure Database parameters in System Settings.', { title: 'AUTHENTICATION REQUIRED', type: 'info' });
-  }
+function handleDbChipClick() {
+  // Navigation via chip click intentionally removed per UI specification
 }
 
 
@@ -342,15 +366,14 @@ async function initApp() {
   const userRole = user.role;
   const isSupervisorOrAbove = ['supervisor', 'manager', 'admin'].includes(userRole);
   const isManagerOrAbove = ['manager', 'admin'].includes(userRole);
+  const isAdmin = userRole === 'admin';
 
-  const tabHoldReject = document.querySelector('[data-tab="tab-hold-reject"]');
   const tabReports = document.querySelector('[data-tab="tab-reports"]');
   const tabUsers = document.querySelector('[data-tab="tab-users"]');
   const tabSystem = document.querySelector('[data-tab="tab-system"]');
 
-  if (tabHoldReject) tabHoldReject.style.display = isSupervisorOrAbove ? 'flex' : 'none';
   if (tabReports) tabReports.style.display = isSupervisorOrAbove ? 'flex' : 'none';
-  if (tabUsers) tabUsers.style.display = isManagerOrAbove ? 'flex' : 'none';
+  if (tabUsers) tabUsers.style.display = isAdmin ? 'flex' : 'none';
   if (tabSystem) tabSystem.style.display = isManagerOrAbove ? 'flex' : 'none';
 
   // Connect WebSocket
@@ -359,11 +382,21 @@ async function initApp() {
   // Start digital telemetry clock
   startClock();
 
+  // Load quality audit reasons (Hold & Reject dropdowns)
+  loadAuditReasons();
+
+  // If database is offline, direct administrator straight to system settings
+  if (window.lastKnownDbConnected === false && isManagerOrAbove) {
+    currentTab = 'tab-system';
+  }
+
   // Load Initial Tab
   switchTab(currentTab);
 
   // Check active dispatch
-  checkActiveDispatch();
+  if (currentTab === 'tab-dispatch') {
+    checkActiveDispatch();
+  }
 }
 
 // ============================================================================
@@ -420,14 +453,27 @@ async function connectWebSocket() {
 
 function updateScannerStatusPill(status) {
   const pill = document.getElementById('header-scanner-status');
-  if (!pill) return;
-  const port = status.activePort || 'COM3';
-  if (status.isConnected) {
-    pill.innerHTML = `<span class="status-led led-green"></span> <span>SCANNER ONLINE</span>`;
-    pill.title = `Hardware Scanner (${port}) - Online & Ready`;
+  const comBadge = document.getElementById('sys-com-status-badge');
+  const port = (status && status.activePort) || 'COM3';
+
+  if (status && status.isConnected) {
+    if (pill) {
+      pill.innerHTML = `<span class="status-led led-green"></span> <span>SCANNER ONLINE</span>`;
+      pill.title = `Hardware Scanner (${port}) - Online & Ready`;
+    }
+    if (comBadge) {
+      comBadge.className = 'badge badge-success';
+      comBadge.textContent = 'ONLINE';
+    }
   } else {
-    pill.innerHTML = `<span class="status-led led-amber"></span> <span>SCANNER OFFLINE</span>`;
-    pill.title = `Hardware Scanner (${port}) - Waiting for connection`;
+    if (pill) {
+      pill.innerHTML = `<span class="status-led led-amber"></span> <span>SCANNER OFFLINE</span>`;
+      pill.title = `Hardware Scanner (${port}) - Waiting for connection`;
+    }
+    if (comBadge) {
+      comBadge.className = 'badge badge-hold';
+      comBadge.textContent = 'OFFLINE';
+    }
   }
 }
 
@@ -436,8 +482,13 @@ function handleHardwareScan(qrData) {
   if (currentTab === 'tab-dispatch' && activeTx && activeTx.status === 'in_progress') {
     processBoxScan(qrData);
   } else if (currentTab === 'tab-traceability') {
-    document.getElementById('trace-query-input').value = qrData;
+    const traceInput = document.getElementById('trace-query-input');
+    if (traceInput) traceInput.value = qrData;
     executeTrace(qrData);
+  } else if (currentTab === 'tab-inventory') {
+    const searchInput = document.getElementById('inv-filter-search');
+    if (searchInput) searchInput.value = qrData;
+    executeInventorySearch();
   } else {
     showBannerAlert(`Scanned QR: ${qrData}`, 'info');
   }
@@ -447,6 +498,11 @@ function handleHardwareScan(qrData) {
 // TAB NAVIGATION & CLOCK
 // ============================================================================
 function switchTab(tabId) {
+  if (tabId === 'tab-users' && (!api.currentUser || api.currentUser.role !== 'admin')) {
+    customModal.alert('Access restricted: Only system administrators can access user management.', { title: 'ACCESS DENIED', type: 'warning' });
+    return switchTab('tab-dispatch');
+  }
+
   currentTab = tabId;
   document.querySelectorAll('.view-content').forEach(view => view.classList.remove('active'));
   document.querySelectorAll('.rail-item, .nav-tab').forEach(tab => tab.classList.remove('active'));
@@ -460,10 +516,17 @@ function switchTab(tabId) {
   // Load view-specific data
   if (tabId === 'tab-dispatch') loadDispatchView();
   else if (tabId === 'tab-inventory') loadInventoryView();
-  else if (tabId === 'tab-hold-reject') loadHoldRejectView();
   else if (tabId === 'tab-reports') loadReportsView();
   else if (tabId === 'tab-users') loadUsersTable();
   else if (tabId === 'tab-system') loadSystemView();
+
+  // Auto-initialize any selects in the newly activated view
+  if (window.scadaDropdown) {
+    setTimeout(() => {
+      window.scadaDropdown.initAll();
+      window.scadaDropdown.syncAll();
+    }, 50);
+  }
 }
 
 let _clockInterval = null;
@@ -527,8 +590,15 @@ async function loadModelSelector() {
       select.appendChild(opt);
     });
 
+    if (window.scadaDropdown && select) {
+      window.scadaDropdown.attach(select).sync();
+    }
+
     updateAvailableStockDisplay();
-    select.onchange = updateAvailableStockDisplay;
+    select.onchange = () => {
+      updateAvailableStockDisplay();
+      if (select._scadaDropdown) select._scadaDropdown.sync();
+    };
   } catch (err) {
     console.error('Failed to load models:', err.message);
   }
@@ -658,7 +728,7 @@ function renderActiveDispatchUI() {
   if (nextUnscannedBox) {
     if (reticleBatch) reticleBatch.textContent = `BATCH #${nextUnscannedBox.batchNumber}`;
     if (reticleModel) reticleModel.textContent = activeTx.modelId;
-    if (reticleSub) reticleSub.innerHTML = `Closed: ${new Date(nextUnscannedBox.closedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} &bull; Qty: ${nextUnscannedBox.completedCount} Pcs`;
+    if (reticleSub) reticleSub.innerHTML = `Produced: ${new Date(nextUnscannedBox.closedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} &bull; Qty: ${nextUnscannedBox.completedCount} Pcs`;
   } else {
     if (reticleBatch) reticleBatch.textContent = `ALL VERIFIED`;
     if (reticleSub) reticleSub.innerHTML = `100% of order scanned. Ready to complete dispatch.`;
@@ -724,6 +794,7 @@ function renderIdleDispatchUI() {
   document.getElementById('fifo-pick-tbody').innerHTML = '<tr><td colspan="6" style="text-align: center; color: #64748b;">No active dispatch session. Select a model and start a session above.</td></tr>';
   document.getElementById('dispatch-progress-text').textContent = 'NO ACTIVE DISPATCH';
   document.getElementById('btn-confirm-dispatch').disabled = true;
+  clearBannerAlert();
 }
 
 async function processBoxScan(scannedPayload) {
@@ -777,31 +848,75 @@ async function handleConfirmDispatch() {
 }
 
 
-async function handleCancelDispatch() {
+function handleCancelDispatch() {
+  if (window.sounds) window.sounds.playClick();
   if (!activeTx) return;
-  const ok = await customModal.confirm(`Are you sure you want to CANCEL dispatch session ${activeTx.dispatchId}?`, { title: 'CANCEL DISPATCH', danger: true, confirmText: 'YES, CANCEL' });
-  if (!ok) return;
+  const dispatchIdEl = document.getElementById('modal-cancel-dispatch-id');
+  const metaEl = document.getElementById('modal-cancel-meta');
+  const reasonEl = document.getElementById('modal-cancel-reason');
+  const errEl = document.getElementById('modal-cancel-error');
 
-  const reason = await customModal.prompt('Reason for cancellation:', { title: 'CANCELLATION REASON', defaultValue: 'Operator cancelled' });
-  if (reason === null) return;
+  if (dispatchIdEl) dispatchIdEl.textContent = activeTx.dispatchId;
+  if (metaEl) {
+    const scanned = (activeTx.scannedBoxes && activeTx.scannedBoxes.length) || 0;
+    const total = (activeTx.allocatedBoxes && activeTx.allocatedBoxes.length) || 0;
+    metaEl.textContent = `Model: ${activeTx.modelId} • Scanned: ${scanned} / ${total} Boxes`;
+  }
+  if (reasonEl) {
+    reasonEl.value = 'Operator cancelled';
+    setTimeout(() => reasonEl.focus(), 150);
+  }
+  if (errEl) {
+    errEl.style.display = 'none';
+    errEl.textContent = '';
+  }
+
+  openModal('modal-cancel-dispatch');
+}
+
+async function submitCancelDispatchModal() {
+  if (!activeTx) return;
+  const reasonEl = document.getElementById('modal-cancel-reason');
+  const errEl = document.getElementById('modal-cancel-error');
+  const reason = reasonEl ? reasonEl.value.trim() : '';
+
+  if (!reason) {
+    if (errEl) {
+      errEl.textContent = 'Please provide a reason for cancelling this active session.';
+      errEl.style.display = 'block';
+    }
+    sounds.playViolation();
+    if (reasonEl) reasonEl.focus();
+    return;
+  }
+
   try {
     await api.cancelDispatch(activeTx.dispatchId, reason);
+    sounds.playAlert();
+    closeModals();
     activeTx = null;
     renderIdleDispatchUI();
-    showBannerAlert('Dispatch session cancelled.', 'info');
+    showBannerAlert('Dispatch session cancelled.', 'info', 4000);
   } catch (err) {
-    await customModal.alert('Cancel failed: ' + err.message, { title: 'CANCEL ERROR', type: 'danger' });
+    if (errEl) {
+      errEl.textContent = 'Cancellation failed: ' + err.message;
+      errEl.style.display = 'block';
+    } else {
+      await customModal.alert('Cancel failed: ' + err.message, { title: 'CANCEL ERROR', type: 'danger' });
+    }
+    sounds.playViolation();
   }
 }
 
-function handleManualScanInput(val) {
-  if (!val) return;
-  processBoxScan(val);
-  document.getElementById('test-scan-input').value = '';
-}
+let _dispAlertTimeout = null;
 
-function showBannerAlert(msg, type = 'info') {
+function showBannerAlert(msg, type = 'info', autoClearMs = 4500) {
   const banner = document.getElementById('disp-alert-banner');
+  if (!banner) return;
+  if (_dispAlertTimeout) {
+    clearTimeout(_dispAlertTimeout);
+    _dispAlertTimeout = null;
+  }
   banner.textContent = msg;
   banner.style.display = 'block';
   banner.classList.remove('alarm-active');
@@ -817,11 +932,33 @@ function showBannerAlert(msg, type = 'info') {
     banner.style.borderColor = 'var(--color-blue)';
     banner.style.color = '#1e40af';
   }
+
+  if (autoClearMs > 0) {
+    _dispAlertTimeout = setTimeout(() => {
+      clearBannerAlert();
+    }, autoClearMs);
+  }
+}
+
+function clearBannerAlert() {
+  const banner = document.getElementById('disp-alert-banner');
+  if (!banner) return;
+  banner.style.display = 'none';
+  banner.textContent = '';
+  banner.classList.remove('alarm-active');
+  if (_dispAlertTimeout) {
+    clearTimeout(_dispAlertTimeout);
+    _dispAlertTimeout = null;
+  }
 }
 
 // ============================================================================
-// VIEW 2: INVENTORY & STATUS
+// VIEW 2: BOX INVENTORY
 // ============================================================================
+let _invCurrentPage = 1;
+let _invTotalPages = 1;
+let _invLimit = 25;
+
 async function loadInventoryView() {
   const modelSelect = document.getElementById('inv-filter-model');
   if (modelSelect && modelSelect.children.length <= 1) {
@@ -831,7 +968,7 @@ async function loadInventoryView() {
         modelsRes.models.forEach(m => {
           const opt = document.createElement('option');
           opt.value = m.modelId;
-          opt.textContent = m.modelId;
+          opt.textContent = m.modelName ? `${m.modelId} (${m.modelName})` : m.modelId;
           modelSelect.appendChild(opt);
         });
       }
@@ -840,27 +977,191 @@ async function loadInventoryView() {
     }
   }
 
-  await applyInventoryFilter();
+  // Attach custom SCADA dropdown
+  if (window.scadaDropdown && modelSelect) {
+    window.scadaDropdown.attach(modelSelect).sync();
+  }
+
+  // Attach custom SCADA datepickers
+  const dateFromEl = document.getElementById('inv-filter-date-from');
+  const dateToEl = document.getElementById('inv-filter-date-to');
+  if (window.scadaDatePicker) {
+    if (dateFromEl) window.scadaDatePicker.attach(dateFromEl, { placeholder: 'YYYY-MM-DD' });
+    if (dateToEl) window.scadaDatePicker.attach(dateToEl, { placeholder: 'YYYY-MM-DD' });
+  }
+
+  // Default to current month if not already set
+  if (dateFromEl && !dateFromEl.value) {
+    const now = new Date();
+    const firstDay = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    if (dateFromEl._scadaDatePicker) dateFromEl._scadaDatePicker.setDate(firstDay);
+    else dateFromEl.value = firstDay;
+  }
+  if (dateToEl && !dateToEl.value) {
+    const now = new Date();
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const lastDayStr = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`;
+    if (dateToEl._scadaDatePicker) dateToEl._scadaDatePicker.setDate(lastDayStr);
+    else dateToEl.value = lastDayStr;
+  }
+
+  await applyInventoryFilter(1);
 }
 
-async function applyInventoryFilter() {
+function setInventoryStatusFilter(status) {
+  if (window.sounds) window.sounds.playClick();
+  const hiddenInput = document.getElementById('inv-filter-status');
+  if (hiddenInput) hiddenInput.value = status;
+
+  document.querySelectorAll('#inv-status-tabs-container .inv-status-tab-btn').forEach(btn => {
+    if (btn.dataset.status === status) {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
+  });
+
+  applyInventoryFilter(1);
+}
+
+function executeInventorySearch() {
+  if (window.sounds) window.sounds.playClick();
+  const searchEl = document.getElementById('inv-filter-search');
+  const query = searchEl ? searchEl.value.trim() : '';
+
+  // If searching with a keyword, clear all other filters so search is unconstrained
+  if (query) {
+    const modelEl = document.getElementById('inv-filter-model');
+    if (modelEl) {
+      modelEl.value = 'ALL';
+      if (modelEl._scadaDropdown) modelEl._scadaDropdown.sync();
+    }
+
+    const dateFromEl = document.getElementById('inv-filter-date-from');
+    const dateToEl = document.getElementById('inv-filter-date-to');
+    if (dateFromEl) {
+      dateFromEl.value = '';
+      if (dateFromEl._scadaDatePicker) dateFromEl._scadaDatePicker.clear();
+    }
+    if (dateToEl) {
+      dateToEl.value = '';
+      if (dateToEl._scadaDatePicker) dateToEl._scadaDatePicker.clear();
+    }
+
+    const hiddenInput = document.getElementById('inv-filter-status');
+    if (hiddenInput) hiddenInput.value = 'ALL';
+
+    document.querySelectorAll('#inv-status-tabs-container .inv-status-tab-btn').forEach(btn => {
+      if (btn.dataset.status === 'ALL') {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+  }
+
+  applyInventoryFilter(1);
+}
+
+function resetInventoryFilters() {
+  if (window.sounds) window.sounds.playClick();
+  const modelEl = document.getElementById('inv-filter-model');
+  const searchEl = document.getElementById('inv-filter-search');
+  const dateFromEl = document.getElementById('inv-filter-date-from');
+  const dateToEl = document.getElementById('inv-filter-date-to');
+
+  if (modelEl) {
+    modelEl.value = 'ALL';
+    if (modelEl._scadaDropdown) modelEl._scadaDropdown.sync();
+  }
+  if (searchEl) searchEl.value = '';
+
+  // Reset dates to current month defaults
+  const now = new Date();
+  const firstDay = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const lastDayStr = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`;
+
+  if (dateFromEl) {
+    if (dateFromEl._scadaDatePicker) dateFromEl._scadaDatePicker.setDate(firstDay);
+    else dateFromEl.value = firstDay;
+  }
+  if (dateToEl) {
+    if (dateToEl._scadaDatePicker) dateToEl._scadaDatePicker.setDate(lastDayStr);
+    else dateToEl.value = lastDayStr;
+  }
+
+  const hiddenInput = document.getElementById('inv-filter-status');
+  if (hiddenInput) hiddenInput.value = 'ALL';
+
+  document.querySelectorAll('#inv-status-tabs-container .inv-status-tab-btn').forEach(btn => {
+    if (btn.dataset.status === 'ALL') {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
+  });
+
+  applyInventoryFilter(1);
+}
+
+function changeInventoryPage(delta) {
+  if (window.sounds) window.sounds.playClick();
+  const newPage = _invCurrentPage + delta;
+  if (newPage >= 1 && newPage <= _invTotalPages) {
+    applyInventoryFilter(newPage);
+  }
+}
+
+async function applyInventoryFilter(page = 1) {
+  _invCurrentPage = page;
   const modelEl = document.getElementById('inv-filter-model');
   const statusEl = document.getElementById('inv-filter-status');
   const searchEl = document.getElementById('inv-filter-search');
+  const dateFromEl = document.getElementById('inv-filter-date-from');
+  const dateToEl = document.getElementById('inv-filter-date-to');
 
   const modelId = modelEl ? modelEl.value : 'ALL';
   const status = statusEl ? statusEl.value : 'ALL';
   const search = searchEl ? searchEl.value.trim() : '';
+  const dateFrom = dateFromEl ? dateFromEl.value.trim() : '';
+  const dateTo = dateToEl ? dateToEl.value.trim() : '';
 
   try {
-    const tbody = document.getElementById('inventory-tbody') || document.getElementById('inv-tbody');
+    const tbody = document.getElementById('inventory-tbody');
     if (!tbody) return;
 
-    const res = await api.getBoxes({ modelId, status, search });
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 24px;"><i class="ri-loader-4-line scada-spin" style="font-size: 16px; display: inline-block; vertical-align: middle; margin-right: 6px;"></i> Loading inventory data...</td></tr>';
+
+    const queryParams = { modelId, status, page: _invCurrentPage, limit: _invLimit };
+    if (search) queryParams.search = search;
+    if (dateFrom) queryParams.dateFrom = dateFrom;
+    if (dateTo) queryParams.dateTo = dateTo;
+
+    const res = await api.getBoxes(queryParams);
     tbody.innerHTML = '';
 
+    const totalChip = document.getElementById('inv-total-chip');
+    const pageInfo = document.getElementById('inv-pagination-info');
+    const pageDisplay = document.getElementById('inv-page-display');
+    const btnPrev = document.getElementById('btn-inv-prev');
+    const btnNext = document.getElementById('btn-inv-next');
+
+    const totalBoxes = (res && res.total) || 0;
+    _invTotalPages = (res && res.pages) || 1;
+
+    if (totalChip) totalChip.textContent = `${totalBoxes} BOXES`;
+    if (pageInfo) {
+      const start = totalBoxes === 0 ? 0 : (_invCurrentPage - 1) * _invLimit + 1;
+      const end = Math.min(_invCurrentPage * _invLimit, totalBoxes);
+      pageInfo.textContent = `Showing ${start} - ${end} of ${totalBoxes} boxes`;
+    }
+    if (pageDisplay) pageDisplay.textContent = `PAGE ${_invCurrentPage} / ${_invTotalPages || 1}`;
+    if (btnPrev) btnPrev.disabled = _invCurrentPage <= 1;
+    if (btnNext) btnNext.disabled = _invCurrentPage >= _invTotalPages;
+
     if (!res || !res.boxes || res.boxes.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 24px;">No boxes matching filter criteria.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 32px;"><i class="ri-inbox-line" style="font-size: 24px; display: block; margin-bottom: 6px; color: #94a3b8;"></i> No boxes found matching filter criteria.</td></tr>';
       return;
     }
 
@@ -870,33 +1171,94 @@ async function applyInventoryFilter() {
 
     res.boxes.forEach(b => {
       const tr = document.createElement('tr');
-      let statusBadge = `<span class="badge badge-${b.status}">${(b.status || 'unknown').toUpperCase()}</span>`;
+      const statusBadge = `<span class="badge badge-${b.status}">${(b.status || 'unknown').toUpperCase()}</span>`;
 
-      let actionsHtml = '';
-      if (b.status === 'available' && isSupervisorOrAbove) {
-        actionsHtml = `
-          <button class="btn-chunky btn-amber" onclick="openHoldModal('${b._id}', ${b.batchNumber})"><i class="ri-pause-circle-line"></i> HOLD</button>
-          <button class="btn-chunky btn-danger" onclick="openRejectModal('${b._id}', ${b.batchNumber})"><i class="ri-close-circle-line"></i> REJECT</button>
-        `;
-      } else if (b.status === 'hold' && isSupervisorOrAbove) {
-        actionsHtml = `<button class="btn-chunky btn-success" onclick="quickReleaseHold('${b._id}', ${b.batchNumber})"><i class="ri-play-circle-line"></i> RELEASE</button>`;
-      } else if (b.status === 'rejected' && isManagerOrAbove) {
-        actionsHtml = `<button class="btn-chunky btn-primary" onclick="openReopenModal('${b._id}', ${b.batchNumber})"><i class="ri-restart-line"></i> REOPEN</button>`;
-      } else {
-        actionsHtml = `<button class="btn-chunky" onclick="traceSpecificBox('${b.batchNumber}')"><i class="ri-search-line"></i> TRACE</button>`;
+      // Reference ID column
+      let refHtml = '<span style="color: #94a3b8; font-size: 11px;">—</span>';
+      if (b.status === 'hold') {
+        refHtml = `<span class="badge badge-hold" style="font-size: 9.5px; padding: 2px 6px;">${b.holdId || 'HLD-PENDING'}</span>`;
+      } else if (b.status === 'rejected') {
+        refHtml = `<span class="badge badge-rejected" style="font-size: 9.5px; padding: 2px 6px;">${b.rejectionId || 'REJ-PENDING'}</span>`;
+      } else if (b.status === 'dispatched') {
+        refHtml = `<span class="badge badge-success" style="font-size: 9.5px; padding: 2px 6px;"><strong style="font-family: var(--font-mono);">${b.dispatchId || 'DISPATCHED'}</strong></span>`;
       }
 
-      const closedTime = b.closedAt ? new Date(b.closedAt).toISOString().slice(0, 16).replace('T', ' ') : 'N/A';
+      // Details / Reason column
+      let detailsHtml = '<span style="color: #94a3b8; font-size: 11px;">—</span>';
+      if (b.status === 'hold') {
+        detailsHtml = `
+          <div style="display: flex; flex-direction: column; gap: 2px;">
+            <span style="font-size: 11px; font-weight: 600; color: #b45309;">${b.holdReason || 'Reason unspecified'}</span>
+            ${b.holdRemarks ? `<span style="font-size: 10px; color: #64748b;">${b.holdRemarks}</span>` : ''}
+          </div>
+        `;
+      } else if (b.status === 'rejected') {
+        detailsHtml = `
+          <div style="display: flex; flex-direction: column; gap: 2px;">
+            <span style="font-size: 11px; font-weight: 600; color: #dc2626;">${b.rejectionReason || 'Reason unspecified'}</span>
+            ${b.rejectionRemarks ? `<span style="font-size: 10px; color: #64748b;">${b.rejectionRemarks}</span>` : ''}
+          </div>
+        `;
+      } else if (b.status === 'dispatched') {
+        const dispatchDate = b.dispatchedAt ? new Date(b.dispatchedAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : (b.updatedAt ? new Date(b.updatedAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '—');
+        detailsHtml = `
+          <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-heading);">
+            Dispatched at: ${dispatchDate}
+          </div>
+        `;
+      }
+
+      // Actions Column: Always include TRACE icon + contextual operation
+      let actionsHtml = `
+        <div style="display: flex; gap: 5px; align-items: center; justify-content: flex-end;">
+          <button class="hud-icon-btn" onclick="traceSpecificBox('${b.batchNumber}')" title="Trace Box #${b.batchNumber} Lifecycle" style="width: 28px; height: 28px; font-size: 13px;">
+            <i class="ri-search-eye-line"></i>
+          </button>
+      `;
+
+      if (b.status === 'available' && isSupervisorOrAbove) {
+        actionsHtml += `
+          <button class="btn-scada btn-warning" style="padding: 2px 7px; font-size: 10px; height: 26px;" onclick="openHoldModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0})">
+            <i class="ri-pause-circle-line"></i> HOLD
+          </button>
+          <button class="btn-scada btn-danger" style="padding: 2px 7px; font-size: 10px; height: 26px;" onclick="openRejectModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0})">
+            <i class="ri-close-circle-line"></i> REJECT
+          </button>
+        `;
+      } else if (b.status === 'hold' && isSupervisorOrAbove) {
+        actionsHtml += `
+          <button class="btn-scada btn-success" style="padding: 2px 9px; font-size: 10px; height: 26px;" onclick="openReleaseModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0})">
+            <i class="ri-play-circle-line"></i> RELEASE
+          </button>
+        `;
+      } else if (b.status === 'rejected' && isManagerOrAbove) {
+        actionsHtml += `
+          <button class="btn-scada btn-primary" style="padding: 2px 9px; font-size: 10px; height: 26px;" onclick="openReopenModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0})">
+            <i class="ri-restart-line"></i> REOPEN
+          </button>
+        `;
+      } else if (b.status === 'dispatched' && b.dispatchId) {
+        actionsHtml += `
+          <button class="btn-scada btn-secondary" style="padding: 2px 8px; font-size: 10px; height: 26px;" onclick="openDispatchBill('${b.dispatchId}')" title="View Delivery Challan">
+            <i class="ri-file-text-line"></i> BILL
+          </button>
+        `;
+      }
+
+      actionsHtml += `</div>`;
+
+      const producedTime = b.closedAt ? new Date(b.closedAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'N/A';
 
       tr.innerHTML = `
-        <td><strong style="color: #38bdf8;">BOX-${b.batchNumber}</strong></td>
+        <td><strong>BOX #${b.batchNumber}</strong></td>
         <td><strong>${b.modelId}</strong></td>
-        <td>MC-${b.machineNo || '1'} (${b.shiftCode || 'A'})</td>
-        <td>${closedTime}</td>
+        <td style="font-family: var(--font-mono); font-size: 11px; font-weight: 700;">MC-${b.machineNo || '18'}</td>
+        <td style="font-family: var(--font-mono); font-size: 11px;">${producedTime}</td>
         <td><strong>${b.completedCount || 0} / ${b.batchSize || 0}</strong></td>
         <td>${statusBadge}</td>
-        <td style="font-size: 11px; color: #94a3b8;">${b.holdReason || b.rejectionReason || b.dispatchId || 'Ready in bay'}</td>
-        <td>${actionsHtml}</td>
+        <td>${refHtml}</td>
+        <td>${detailsHtml}</td>
+        <td style="text-align: right;">${actionsHtml}</td>
       `;
       tbody.appendChild(tr);
     });
@@ -905,152 +1267,290 @@ async function applyInventoryFilter() {
   }
 }
 
-// ============================================================================
-// VIEW 3: HOLD / REJECT DESK
-// ============================================================================
-async function loadHoldRejectView() {
-  try {
-    const [holdBoxes, rejBoxes] = await Promise.all([
-      api.getBoxes({ status: 'hold' }),
-      api.getBoxes({ status: 'rejected' })
-    ]);
-
-    // Active Holds
-    const holdTbody = document.getElementById('hold-tbody') || document.getElementById('hold-desk-tbody');
-    if (holdTbody) {
-      holdTbody.innerHTML = '';
-      const holdCountEl = document.getElementById('hold-count') || document.getElementById('hold-count-badge');
-      const hList = (holdBoxes && holdBoxes.boxes) || [];
-      if (holdCountEl) holdCountEl.textContent = hList.length;
-
-      if (hList.length === 0) {
-        holdTbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 20px;">No boxes currently on hold.</td></tr>';
-      } else {
-        hList.forEach(b => {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td><strong style="color: #38bdf8;">BOX-${b.batchNumber}</strong> (${b.modelId})</td>
-            <td><strong>${b.holdId || 'HLD-PENDING'}</strong></td>
-            <td>${b.holdReason || ''}<br><span style="font-size: 10px; color: #94a3b8;">${b.holdRemarks || ''}</span></td>
-            <td>${b.heldBy || 'Supervisor'}</td>
-            <td>
-              <button class="btn-chunky btn-success" onclick="quickReleaseHold('${b._id}', ${b.batchNumber})"><i class="ri-play-circle-line"></i> RELEASE</button>
-            </td>
-          `;
-          holdTbody.appendChild(tr);
-        });
-      }
-    }
-
-    // Rejected Inventory
-    const rejTbody = document.getElementById('reject-tbody') || document.getElementById('rej-desk-tbody');
-    if (rejTbody) {
-      rejTbody.innerHTML = '';
-      const rejCountEl = document.getElementById('reject-count') || document.getElementById('reject-count-badge');
-      const rList = (rejBoxes && rejBoxes.boxes) || [];
-      if (rejCountEl) rejCountEl.textContent = rList.length;
-
-      const userRole = (api.currentUser && api.currentUser.role) || 'admin';
-      const isManagerOrAbove = ['manager', 'admin'].includes(userRole);
-
-      if (rList.length === 0) {
-        rejTbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 20px;">No boxes currently rejected.</td></tr>';
-      } else {
-        rList.forEach(b => {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td><strong style="color: #f87171;">BOX-${b.batchNumber}</strong> (${b.modelId})</td>
-            <td><strong>${b.rejectionId || 'REJ-PENDING'}</strong></td>
-            <td>${b.rejectionReason || ''}<br><span style="font-size: 10px; color: #94a3b8;">${b.rejectionRemarks || ''}</span></td>
-            <td>${b.rejectedBy || 'Supervisor'}</td>
-            <td>
-              ${isManagerOrAbove ? `<button class="btn-chunky btn-primary" onclick="openReopenModal('${b._id}', ${b.batchNumber})"><i class="ri-restart-line"></i> REOPEN (MGR)</button>` : '<span style="color: #64748b; font-size: 11px;">MGR ONLY</span>'}
-            </td>
-          `;
-          rejTbody.appendChild(tr);
-        });
-      }
-    }
-  } catch (err) {
-    console.error('Failed to load hold/reject desk:', err.message);
-  }
-}
-
 // Modal actions: Hold, Release, Reject, Reopen
 let activeModalBoxId = null;
 
-function openHoldModal(boxId, batchNumber) {
+function openHoldModal(boxId, batchNumber, modelId, qty) {
+  if (window.sounds) window.sounds.playClick();
   activeModalBoxId = boxId;
-  document.getElementById('modal-hold-title').textContent = `PUT BOX #${batchNumber} ON HOLD`;
+  const title = document.getElementById('modal-hold-title');
+  if (title) title.textContent = `PUT BOX #${batchNumber} ON HOLD`;
+
+  const label = document.getElementById('modal-hold-box-label');
+  if (label) label.textContent = `BOX #${batchNumber}`;
+
+  const meta = document.getElementById('modal-hold-box-meta');
+  if (meta) meta.textContent = `Model: ${modelId || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
+
+  const errEl = document.getElementById('modal-hold-error');
+  if (errEl) {
+    errEl.style.display = 'none';
+    errEl.textContent = '';
+  }
+
+  // Populate reasons and force blank default selection
+  populateModalReasonDropdowns();
+  const reasonSelect = document.getElementById('modal-hold-reason');
+  if (reasonSelect) {
+    reasonSelect.value = '';
+    if (reasonSelect._scadaDropdown) reasonSelect._scadaDropdown.sync();
+  }
+
+  const remarksInput = document.getElementById('modal-hold-remarks');
+  if (remarksInput) {
+    remarksInput.value = '';
+  }
+
   openModal('modal-hold');
 }
 
 async function submitHoldModal() {
-  const reason = document.getElementById('modal-hold-reason').value;
-  const remarks = document.getElementById('modal-hold-remarks').value;
+  const reasonEl = document.getElementById('modal-hold-reason');
+  const remarksEl = document.getElementById('modal-hold-remarks');
+  const errEl = document.getElementById('modal-hold-error');
+
+  const reason = reasonEl ? reasonEl.value : '';
+  const remarks = remarksEl ? remarksEl.value.trim() : '';
+
+  if (!reason || reason === '') {
+    if (errEl) {
+      errEl.textContent = 'Please select an appropriate reason for putting the box on hold.';
+      errEl.style.display = 'block';
+    }
+    sounds.playViolation();
+    if (reasonEl) reasonEl.focus();
+    return;
+  }
+
+  if (!remarks) {
+    if (errEl) {
+      errEl.textContent = 'Supervisor remarks are mandatory. Please provide quarantine details.';
+      errEl.style.display = 'block';
+    }
+    sounds.playViolation();
+    if (remarksEl) remarksEl.focus();
+    return;
+  }
+
+  if (errEl) errEl.style.display = 'none';
+
   try {
     await api.holdBox(activeModalBoxId, reason, remarks);
     sounds.playAlert();
     closeModals();
     applyInventoryFilter();
   } catch (err) {
-    await customModal.alert('Hold failed: ' + err.message, { title: 'HOLD ERROR', type: 'danger' });
+    if (errEl) {
+      errEl.textContent = 'Hold failed: ' + err.message;
+      errEl.style.display = 'block';
+    } else {
+      await customModal.alert('Hold failed: ' + err.message, { title: 'HOLD ERROR', type: 'danger' });
+    }
+    sounds.playViolation();
+  }
+}
+
+function openReleaseModal(boxId, batchNumber, modelId, qty) {
+  if (window.sounds) window.sounds.playClick();
+  activeModalBoxId = boxId;
+  const title = document.getElementById('modal-release-title');
+  if (title) title.textContent = `RELEASE BOX #${batchNumber}`;
+
+  const label = document.getElementById('modal-release-box-label');
+  if (label) label.textContent = `BOX #${batchNumber}`;
+
+  const meta = document.getElementById('modal-release-box-meta');
+  if (meta) meta.textContent = `Model: ${modelId || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
+
+  const errEl = document.getElementById('modal-release-error');
+  if (errEl) {
+    errEl.style.display = 'none';
+    errEl.textContent = '';
+  }
+
+  const remarksInput = document.getElementById('modal-release-remarks');
+  if (remarksInput) {
+    remarksInput.value = '';
+    setTimeout(() => remarksInput.focus(), 150);
+  }
+
+  openModal('modal-release');
+}
+
+async function submitReleaseModal() {
+  if (!activeModalBoxId) return;
+
+  const errEl = document.getElementById('modal-release-error');
+  const remarksInput = document.getElementById('modal-release-remarks');
+  const remarks = remarksInput ? remarksInput.value.trim() : '';
+
+  if (!remarks || remarks.length < 3) {
+    if (errEl) {
+      errEl.textContent = 'Please enter release remarks (min 3 characters).';
+      errEl.style.display = 'block';
+    }
+    sounds.playViolation();
+    if (remarksInput) remarksInput.focus();
+    return;
+  }
+
+  try {
+    await api.releaseHold(activeModalBoxId, remarks);
+    closeModals();
+    sounds.playSuccess();
+    applyInventoryFilter();
+  } catch (err) {
+    if (errEl) {
+      errEl.textContent = err.message || 'Failed to release box';
+      errEl.style.display = 'block';
+    } else {
+      await customModal.alert('Release failed: ' + err.message, { title: 'RELEASE ERROR', type: 'danger' });
+    }
+    sounds.playViolation();
   }
 }
 
 async function quickReleaseHold(boxId, batchNumber) {
-  const remarks = await customModal.prompt(`Enter release remarks for Box #${batchNumber}:`, { title: 'RELEASE BOX FROM HOLD', defaultValue: 'Inspected and cleared' });
-  if (remarks === null) return;
-  try {
-    await api.releaseHold(boxId, remarks);
-    sounds.playSuccess();
-    applyInventoryFilter();
-    loadHoldRejectView();
-  } catch (err) {
-    await customModal.alert('Release failed: ' + err.message, { title: 'RELEASE ERROR', type: 'danger' });
-  }
+  openReleaseModal(boxId, batchNumber);
 }
 
-function openRejectModal(boxId, batchNumber) {
+function openRejectModal(boxId, batchNumber, modelId, qty) {
+  if (window.sounds) window.sounds.playClick();
   activeModalBoxId = boxId;
-  document.getElementById('modal-reject-title').textContent = `REJECT BOX #${batchNumber}`;
+  const title = document.getElementById('modal-reject-title');
+  if (title) title.textContent = `REJECT BOX #${batchNumber}`;
+
+  const label = document.getElementById('modal-reject-box-label');
+  if (label) label.textContent = `BOX #${batchNumber}`;
+
+  const meta = document.getElementById('modal-reject-box-meta');
+  if (meta) meta.textContent = `Model: ${modelId || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
+
+  const errEl = document.getElementById('modal-reject-error');
+  if (errEl) {
+    errEl.style.display = 'none';
+    errEl.textContent = '';
+  }
+
+  // Populate reasons and force blank default selection
+  populateModalReasonDropdowns();
+  const reasonSelect = document.getElementById('modal-reject-reason');
+  if (reasonSelect) {
+    reasonSelect.value = '';
+    if (reasonSelect._scadaDropdown) reasonSelect._scadaDropdown.sync();
+  }
+
+  const remarksInput = document.getElementById('modal-reject-remarks');
+  if (remarksInput) {
+    remarksInput.value = '';
+  }
+
   openModal('modal-reject');
 }
 
 async function submitRejectModal() {
-  const reason = document.getElementById('modal-reject-reason').value;
-  const remarks = document.getElementById('modal-reject-remarks').value;
+  const reasonEl = document.getElementById('modal-reject-reason');
+  const remarksEl = document.getElementById('modal-reject-remarks');
+  const errEl = document.getElementById('modal-reject-error');
+
+  const reason = reasonEl ? reasonEl.value : '';
+  const remarks = remarksEl ? remarksEl.value.trim() : '';
+
+  if (!reason || reason === '') {
+    if (errEl) {
+      errEl.textContent = 'Please select an appropriate rejection defect reason.';
+      errEl.style.display = 'block';
+    }
+    sounds.playViolation();
+    if (reasonEl) reasonEl.focus();
+    return;
+  }
+
+  if (!remarks) {
+    if (errEl) {
+      errEl.textContent = 'Rejection remarks are mandatory. Please provide defect details.';
+      errEl.style.display = 'block';
+    }
+    sounds.playViolation();
+    if (remarksEl) remarksEl.focus();
+    return;
+  }
+
+  if (errEl) errEl.style.display = 'none';
+
   try {
     await api.rejectBox(activeModalBoxId, reason, remarks);
     sounds.playViolation();
     closeModals();
     applyInventoryFilter();
   } catch (err) {
-    await customModal.alert('Reject failed: ' + err.message, { title: 'REJECT ERROR', type: 'danger' });
+    if (errEl) {
+      errEl.textContent = 'Reject failed: ' + err.message;
+      errEl.style.display = 'block';
+    } else {
+      await customModal.alert('Reject failed: ' + err.message, { title: 'REJECT ERROR', type: 'danger' });
+    }
+    sounds.playViolation();
   }
 }
 
-function openReopenModal(boxId, batchNumber) {
+function openReopenModal(boxId, batchNumber, modelId, qty) {
+  if (window.sounds) window.sounds.playClick();
   activeModalBoxId = boxId;
-  document.getElementById('modal-reopen-title').textContent = `MANAGER APPROVAL: REOPEN BOX #${batchNumber}`;
+  const title = document.getElementById('modal-reopen-title');
+  if (title) title.textContent = `REOPEN BOX #${batchNumber}`;
+
+  const label = document.getElementById('modal-reopen-box-label');
+  if (label) label.textContent = `BOX #${batchNumber}`;
+
+  const meta = document.getElementById('modal-reopen-box-meta');
+  if (meta) meta.textContent = `Model: ${modelId || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
+
+  const errEl = document.getElementById('modal-reopen-error');
+  if (errEl) {
+    errEl.style.display = 'none';
+    errEl.textContent = '';
+  }
+
+  const remarksInput = document.getElementById('modal-reopen-remarks');
+  if (remarksInput) {
+    remarksInput.value = '';
+    setTimeout(() => remarksInput.focus(), 150);
+  }
+
   openModal('modal-reopen');
 }
 
 async function submitReopenModal() {
-  const remarks = document.getElementById('modal-reopen-remarks').value.trim();
+  const remarksEl = document.getElementById('modal-reopen-remarks');
+  const errEl = document.getElementById('modal-reopen-error');
+  const remarks = remarksEl ? remarksEl.value.trim() : '';
+
   if (!remarks || remarks.length < 5) {
-    await customModal.alert('Mandatory Manager remarks required (minimum 5 characters)', { title: 'REOPEN RESTRICTION', type: 'warning' });
+    if (errEl) {
+      errEl.textContent = 'Mandatory remarks required (minimum 5 characters).';
+      errEl.style.display = 'block';
+    }
+    sounds.playViolation();
+    if (remarksEl) remarksEl.focus();
     return;
   }
+
+  if (errEl) errEl.style.display = 'none';
 
   try {
     await api.reopenBox(activeModalBoxId, remarks);
     sounds.playSuccess();
     closeModals();
     applyInventoryFilter();
-    loadHoldRejectView();
   } catch (err) {
-    await customModal.alert('Reopen failed: ' + err.message, { title: 'REOPEN ERROR', type: 'danger' });
+    if (errEl) {
+      errEl.textContent = 'Reopen failed: ' + err.message;
+      errEl.style.display = 'block';
+    } else {
+      await customModal.alert('Reopen failed: ' + err.message, { title: 'REOPEN ERROR', type: 'danger' });
+    }
+    sounds.playViolation();
   }
 }
 
@@ -1085,128 +1585,741 @@ document.addEventListener('click', (e) => {
 // ============================================================================
 // VIEW 4: BOX TRACEABILITY
 // ============================================================================
+const SCADA_EVENT_CONFIG = {
+  'BOX_INGESTED': {
+    title: 'PRODUCTION INGESTION',
+    icon: 'ri-inbox-archive-line',
+    class: 'evt-ingested',
+    badgeClass: 'badge-evt-ingested',
+    calloutClass: 'callout-evt-ingested',
+    desc: 'Produced and packed at production line'
+  },
+  'BOX_HELD': {
+    title: 'QUALITY AUDIT HOLD PLACED',
+    icon: 'ri-pause-line',
+    class: 'evt-held',
+    badgeClass: 'badge-evt-held',
+    calloutClass: 'callout-evt-held',
+    desc: 'Box quarantined pending quality investigation'
+  },
+  'BOX_HOLD_RELEASED': {
+    title: 'QUALITY HOLD CLEARED & RELEASED',
+    icon: 'ri-check-line',
+    class: 'evt-released',
+    badgeClass: 'badge-evt-released',
+    calloutClass: 'callout-evt-released',
+    desc: 'Authorized release back to available inventory'
+  },
+  'BOX_REJECTED': {
+    title: 'QUALITY REJECTION (DEFECT QUARANTINE)',
+    icon: 'ri-close-line',
+    class: 'evt-rejected',
+    badgeClass: 'badge-evt-rejected',
+    calloutClass: 'callout-evt-rejected',
+    desc: 'Scrapped or flagged for complete rejection'
+  },
+  'BOX_REJECT_REOPENED': {
+    title: 'MANAGER REOPENING AUTHORIZATION',
+    icon: 'ri-lock-unlock-line',
+    class: 'evt-reopened',
+    badgeClass: 'badge-evt-reopened',
+    calloutClass: 'callout-evt-reopened',
+    desc: 'High-level override and release'
+  },
+  'BOX_ALLOCATED': {
+    title: 'ALLOCATED TO FIFO DISPATCH ORDER',
+    icon: 'ri-stack-line',
+    class: 'evt-allocated',
+    badgeClass: 'badge-evt-allocated',
+    calloutClass: 'callout-evt-allocated',
+    desc: 'Reserved for strict FIFO dispatch staging'
+  },
+  'BOX_SCANNED': {
+    title: 'PHYSICAL BARCODE SCAN VERIFIED',
+    icon: 'ri-qr-scan-2-line',
+    class: 'evt-scanned',
+    badgeClass: 'badge-evt-scanned',
+    calloutClass: 'callout-evt-scanned',
+    desc: 'Scanned & matched by scanner'
+  },
+  'BOX_DISPATCHED': {
+    title: 'FINAL CUSTOMER DISPATCH CONFIRMED',
+    icon: 'ri-truck-line',
+    class: 'evt-dispatched',
+    badgeClass: 'badge-evt-dispatched',
+    calloutClass: 'callout-evt-dispatched',
+    desc: 'Order manifest closed and handed over for shipment'
+  }
+};
+
+let _currentTracedBox = null;
+let _currentTracedSerials = [];
+
+// Copy Reference ID to clipboard with tactile feedback
+window.copyReferenceId = async function(idStr, el) {
+  if (!idStr) return;
+  try {
+    await navigator.clipboard.writeText(idStr);
+    const originalContent = el.innerHTML;
+    el.classList.add('copied');
+    el.innerHTML = `<i class="ri-check-line" style="font-size: 10px;"></i> COPIED`;
+    setTimeout(() => {
+      el.classList.remove('copied');
+      el.innerHTML = originalContent;
+    }, 1300);
+  } catch (err) {
+    console.error('Clipboard copy failed:', err);
+  }
+};
+
+function formatRelativeTime(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return '';
+  const now = new Date();
+  const diffSec = Math.round((now - d) / 1000);
+
+  if (diffSec < 45) return 'Just now';
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDays = Math.round(diffHr / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+  const diffWeeks = Math.round(diffDays / 7);
+  if (diffDays < 30) return `${diffWeeks}w ago`;
+  const diffMonths = Math.round(diffDays / 30.44);
+  if (diffMonths < 12) return `${diffMonths}mo ago`;
+  const diffYears = (diffDays / 365.25).toFixed(1);
+  const cleanYears = diffYears.endsWith('.0') ? parseInt(diffYears, 10) : diffYears;
+  return `${cleanYears}y ago`;
+}
+
+function updateTimelineLine() {
+  const rail = document.getElementById('trace-timeline-items');
+  if (!rail) return;
+  const nodes = rail.querySelectorAll('.scada-timeline-node');
+  let line = document.getElementById('scada-timeline-connecting-line');
+  if (nodes.length < 2) {
+    if (line) line.style.display = 'none';
+    return;
+  }
+  if (!line) {
+    line = document.createElement('div');
+    line.id = 'scada-timeline-connecting-line';
+    rail.appendChild(line);
+  }
+
+  const railRect = rail.getBoundingClientRect();
+  const firstRect = nodes[0].getBoundingClientRect();
+  const lastRect = nodes[nodes.length - 1].getBoundingClientRect();
+
+  const top = (firstRect.top + firstRect.height / 2) - railRect.top;
+  const bottom = railRect.bottom - (lastRect.top + lastRect.height / 2);
+  const left = (firstRect.left + firstRect.width / 2) - railRect.left;
+
+  line.style.display = 'block';
+  line.style.position = 'absolute';
+  line.style.left = `${left - 1}px`;
+  line.style.top = `${top}px`;
+  line.style.bottom = `${bottom}px`;
+  line.style.width = '2px';
+  line.style.background = '#94a3b8';
+  line.style.zIndex = '1';
+  line.style.pointerEvents = 'none';
+}
+window.addEventListener('resize', updateTimelineLine);
+
 async function executeTrace(query) {
   const q = query || document.getElementById('trace-query-input').value.trim();
   if (!q) return;
+
+  const resultsContainer = document.getElementById('trace-results-container');
+  const emptyState = document.getElementById('trace-empty-state');
 
   try {
     const res = await api.traceBox(q);
     const box = res.box;
     const timeline = res.timeline;
+    _currentTracedBox = box;
+    _currentTracedSerials = box.serialNumbers || [];
 
-    document.getElementById('trace-results-container').style.display = 'block';
-    document.getElementById('trace-box-header').textContent = `BOX #${box.batchNumber} - ${box.modelId} (${box.modelName})`;
-    document.getElementById('trace-box-status').innerHTML = `<span class="badge badge-${box.status}">${box.status.toUpperCase()}</span>`;
-    document.getElementById('trace-box-meta').textContent = `Machine: MC-${box.machineNo} | Shift: ${box.shiftCode} | Closed At: ${new Date(box.closedAt).toLocaleString()} | Parts: ${box.completedCount}/${box.batchSize}`;
+    if (emptyState) emptyState.style.display = 'none';
+    if (resultsContainer) resultsContainer.style.display = 'block';
 
+    // 1. Compact Box Header
+    document.getElementById('trace-box-title').textContent = `BOX #${box.batchNumber} - ${box.modelName || box.modelId}`;
+    document.getElementById('trace-customer-name').innerHTML = `<i class="ri-building-line"></i> ${box.customerName || 'Mahindra & Mahindra Powertrain'}`;
+    document.getElementById('trace-customer-part').textContent = box.customerPartNo || 'N/A';
+    document.getElementById('trace-model-id').textContent = box.modelId;
+
+    // Status Badge
+    const statusMap = {
+      'available': { label: 'AVAILABLE', cls: 'badge-available' },
+      'hold': { label: 'ON QA HOLD', cls: 'badge-hold' },
+      'rejected': { label: 'REJECTED / SCRAP', cls: 'badge-rejected' },
+      'dispatched': { label: 'DISPATCHED', cls: 'badge-dispatched' }
+    };
+    const stInfo = statusMap[box.status] || { label: box.status.toUpperCase(), cls: 'badge-verified' };
+    document.getElementById('trace-box-status-badge').innerHTML = `<span class="badge ${stInfo.cls}" style="font-size: 11px; padding: 4px 10px; font-weight: 800;">${stInfo.label}</span>`;
+
+    // 2. Compact Telemetry Metric Chips
+    document.getElementById('trace-tile-machine').textContent = `MC-${box.machineNo}`;
+    if (window.sounds) window.sounds.playClick();
+
+    const isPartial = box.completedCount < box.batchSize;
+    const qtyEl = document.getElementById('trace-tile-qty');
+    if (qtyEl) {
+      if (isPartial) {
+        qtyEl.innerHTML = `
+          <span style="color: #b45309; font-weight: 800;">${box.completedCount}</span> / ${box.batchSize} PCS
+          <span class="badge" style="background: #fef3c7; color: #b45309; border: 1px solid #fcd34d; font-size: 8.5px; padding: 1px 5px; margin-left: 3px; font-weight: 800; letter-spacing: 0.02em; vertical-align: middle;">PARTIAL</span>
+        `;
+      } else {
+        qtyEl.textContent = `${box.completedCount} / ${box.batchSize} PCS`;
+      }
+    }
+
+    const now = new Date();
+    const closedDate = new Date(box.closedAt);
+    const isToday = closedDate.toDateString() === now.toDateString();
+    const closedDisplay = isToday 
+      ? closedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      : closedDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+    document.getElementById('trace-tile-closed').textContent = `${closedDisplay} (${formatRelativeTime(box.closedAt)})`;
+
+    // Serials Count in Button
+    const btnCount = document.getElementById('trace-serials-btn-count');
+    if (btnCount) btnCount.textContent = _currentTracedSerials.length;
+
+    // 3. Chronological Lifecycle Timeline Rail
     const timelineContainer = document.getElementById('trace-timeline-items');
     timelineContainer.innerHTML = '';
 
-    timeline.forEach(event => {
-      const item = document.createElement('div');
-      item.className = 'box-bordered';
-      item.style.marginBottom = '10px';
+    const counter = document.getElementById('trace-event-counter');
+    if (counter) counter.textContent = `${timeline.length} AUDIT EVENTS`;
 
-      item.innerHTML = `
-        <div style="display: flex; justify-content: space-between; font-weight: 800;">
-          <span style="color: #38bdf8;">${event.eventType}</span>
-          <span style="font-family: var(--font-mono); color: #94a3b8; font-size: 11px;">${new Date(event.timestamp).toLocaleString()}</span>
+    timeline.forEach(event => {
+      const conf = SCADA_EVENT_CONFIG[event.eventType] || {
+        title: (event.eventType || '').replace(/_/g, ' '),
+        icon: 'ri-record-circle-line',
+        class: 'evt-ingested',
+        badgeClass: 'badge-evt-ingested',
+        calloutClass: 'callout-evt-ingested'
+      };
+
+      const step = document.createElement('div');
+      step.className = `scada-timeline-step ${conf.class}`;
+
+      const eventDate = new Date(event.timestamp);
+      const formattedTime = eventDate.toLocaleString([], {
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+      const relTime = formatRelativeTime(event.timestamp);
+
+      // Clean event tag display: replace underscores with spaces
+      const eventTagDisplay = (event.eventType || '').replace(/_/g, ' ');
+
+      // Use Full Name for actor
+      const actorName = event.performedByName || event.performedBy || 'System';
+
+      // Callout box: display for QA/hold/reject/reopen actions, or whenever custom reason/remarks exist
+      const isAutoMilestone = ['BOX_INGESTED', 'BOX_ALLOCATED', 'BOX_SCANNED', 'BOX_DISPATCHED'].includes(event.eventType);
+      let calloutHtml = '';
+      if (event.reason || (event.remarks && !isAutoMilestone)) {
+        calloutHtml = `
+          <div class="scada-callout-box ${conf.calloutClass}">
+            ${event.reason ? `<span style="margin-right: 8px;"><strong>AUDIT REASON:</strong> ${event.reason}</span>` : ''}
+            ${event.remarks ? `<span><strong>REMARKS:</strong> &ldquo;${event.remarks}&rdquo;</span>` : ''}
+          </div>
+        `;
+      }
+
+      // Copyable Reference ID Chip
+      const refChip = event.referenceId ? `
+        <span class="scada-ref-chip" onclick="copyReferenceId('${event.referenceId}', this)" title="Click to copy ${event.referenceId}">
+          <i class="ri-hashtag" style="color: var(--color-primary); font-size: 10px;"></i>
+          <span>${event.referenceId}</span>
+          <i class="ri-file-copy-line" style="font-size: 10px; margin-left: 2px; opacity: 0.65;"></i>
+        </span>
+      ` : '';
+
+      step.innerHTML = `
+        <div class="scada-timeline-node" title="${conf.title}">
+          <i class="${conf.icon}"></i>
         </div>
-        <div style="font-size: 11px; margin-top: 4px; color: #cbd5e1;">
-          By: <strong>${event.performedBy}</strong> (${event.userRole})
-          ${event.referenceId ? ` | Ref: <strong>${event.referenceId}</strong>` : ''}
-          ${event.reason ? ` | Reason: <em>${event.reason}</em>` : ''}
+        <div class="scada-event-card ${conf.class}">
+          <div class="scada-event-card-header">
+            <div class="scada-event-left-info">
+              <span class="badge ${conf.badgeClass}" style="font-size: 9.5px; padding: 2px 7px; font-weight: 800; letter-spacing: 0.03em;">${eventTagDisplay}</span>
+              <span class="scada-event-title">${conf.title}</span>
+              <span class="scada-event-actor-inline">
+                &bull; By: <strong>${actorName}</strong>
+                <span class="badge badge-verified" style="font-size: 8.5px; padding: 1px 4px;">${event.userRole}</span>
+              </span>
+              ${refChip}
+            </div>
+            <div class="scada-event-time">
+              <i class="ri-time-line" style="color: var(--text-muted);"></i>
+              <span>${formattedTime}</span>
+              <span style="color: #64748b; font-size: 9.5px;">(${relTime})</span>
+            </div>
+          </div>
+          ${calloutHtml}
         </div>
-        ${event.remarks ? `<div style="font-size: 11px; color: #94a3b8; font-style: italic; margin-top: 2px;">"${event.remarks}"</div>` : ''}
       `;
-      timelineContainer.appendChild(item);
+
+      timelineContainer.appendChild(step);
     });
+
+    // Update dynamic line connection precisely between first and last nodes
+    requestAnimationFrame(updateTimelineLine);
 
     sounds.playAlert();
   } catch (err) {
     sounds.playViolation();
+    if (emptyState) emptyState.style.display = 'block';
+    if (resultsContainer) resultsContainer.style.display = 'none';
     await customModal.alert('Trace lookup error: ' + err.message, { title: 'TRACE LOOKUP ERROR', type: 'danger' });
   }
 }
 
 function traceSpecificBox(batchNum) {
   switchTab('tab-traceability');
-  document.getElementById('trace-query-input').value = batchNum;
+  const input = document.getElementById('trace-query-input');
+  if (input) input.value = batchNum;
   executeTrace(batchNum);
 }
 
+function openSerialsModal() {
+  const modal = document.getElementById('trace-serials-modal');
+  const sub = document.getElementById('trace-serials-modal-sub');
+  const filterInput = document.getElementById('trace-modal-serial-filter');
+  if (filterInput) filterInput.value = '';
+  if (sub && _currentTracedBox) {
+    const isPartial = _currentTracedBox.completedCount < _currentTracedBox.batchSize;
+    const shortCount = _currentTracedBox.batchSize - _currentTracedBox.completedCount;
+    const statusNote = isPartial 
+      ? ` &bull; <span style="color: #b45309; font-weight: 700;">Partial Box (${shortCount} short of ${_currentTracedBox.batchSize})</span>`
+      : ' &bull; <span style="color: #15803d; font-weight: 700;">Full Standard Box</span>';
+    sub.innerHTML = `Box #${_currentTracedBox.batchNumber} &bull; Model ${_currentTracedBox.modelId} &bull; ${_currentTracedSerials.length} Serialized Parts${statusNote}`;
+  }
+  renderModalSerials(_currentTracedSerials);
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeSerialsModal() {
+  const modal = document.getElementById('trace-serials-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function filterModalSerials(query) {
+  const q = (query || '').toLowerCase().trim();
+  const filtered = _currentTracedSerials.filter(s => s.toLowerCase().includes(q));
+  renderModalSerials(filtered);
+}
+
+function renderModalSerials(serials) {
+  const grid = document.getElementById('trace-modal-serials-grid');
+  if (!grid) return;
+  if (serials.length === 0) {
+    grid.innerHTML = '<div style="padding: 18px; color: var(--text-muted); font-size: 11px; text-align: center; grid-column: 1 / -1;">No matching serial numbers found.</div>';
+    return;
+  }
+  grid.innerHTML = serials.map(s => `<div class="trace-serial-chip">${s}</div>`).join('');
+}
+
+window.executeTrace = executeTrace;
+window.traceSpecificBox = traceSpecificBox;
+window.openSerialsModal = openSerialsModal;
+window.closeSerialsModal = closeSerialsModal;
+window.filterModalSerials = filterModalSerials;
+
 // ============================================================================
-// VIEW 5: REPORTS & ANALYTICS
+// VIEW 5: DISPATCH REPORTS & ANALYTICS
 // ============================================================================
+let _repCurrentPage = 1;
+let _repTotalPages = 1;
+let _repLimit = 15;
+
 async function loadReportsView() {
-  try {
-    const [monthlyRes, histRes] = await Promise.all([
-      api.getMonthlyReports(),
-      api.getDispatchHistory({ limit: 15 })
-    ]);
+  // Populate model dropdown if empty
+  const modelSelect = document.getElementById('rep-filter-model');
+  if (modelSelect && modelSelect.children.length <= 1) {
+    try {
+      const modelsRes = await api.getModels();
+      if (modelsRes && modelsRes.models) {
+        modelsRes.models.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m.modelId;
+          opt.textContent = m.modelName ? `${m.modelId} (${m.modelName})` : m.modelId;
+          modelSelect.appendChild(opt);
+        });
+      }
+    } catch (err) {
+      console.warn('Failed to load models list for reports filter:', err);
+    }
+  }
 
-    // Metrics
-    document.getElementById('rep-month-name').textContent = monthlyRes.metrics.monthName.toUpperCase();
-    document.getElementById('rep-boxes-month').textContent = monthlyRes.metrics.dispatchedThisMonthBoxes;
-    document.getElementById('rep-parts-month').textContent = monthlyRes.metrics.dispatchedThisMonthParts.toLocaleString();
-    document.getElementById('rep-active-holds').textContent = monthlyRes.metrics.activeHoldBoxes;
-    document.getElementById('rep-rejected-month').textContent = monthlyRes.metrics.rejectedThisMonthBoxes;
+  // Attach custom SCADA dropdown & datepickers
+  if (window.scadaDropdown && modelSelect) {
+    window.scadaDropdown.attach(modelSelect).sync();
+  }
 
-    // Charts (Offline Chart.js)
-    if (typeof Chart !== 'undefined') {
+  const dateFromEl = document.getElementById('rep-filter-date-from');
+  const dateToEl = document.getElementById('rep-filter-date-to');
+  if (window.scadaDatePicker) {
+    if (dateFromEl) window.scadaDatePicker.attach(dateFromEl, { placeholder: 'YYYY-MM-DD' });
+    if (dateToEl) window.scadaDatePicker.attach(dateToEl, { placeholder: 'YYYY-MM-DD' });
+  }
+
+  // Default to current month if dates not already set
+  if (dateFromEl && !dateFromEl.value) {
+    const now = new Date();
+    const firstDay = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    if (dateFromEl._scadaDatePicker) dateFromEl._scadaDatePicker.setDate(firstDay);
+    else dateFromEl.value = firstDay;
+  }
+  if (dateToEl && !dateToEl.value) {
+    const now = new Date();
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const lastDayStr = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`;
+    if (dateToEl._scadaDatePicker) dateToEl._scadaDatePicker.setDate(lastDayStr);
+    else dateToEl.value = lastDayStr;
+  }
+
+  // Load everything filtered
+  await applyReportsFilter(1);
+}
+
+function resetReportsFilter() {
+  if (window.sounds) window.sounds.playClick();
+  const dateFrom = document.getElementById('rep-filter-date-from');
+  const dateTo = document.getElementById('rep-filter-date-to');
+  const modelEl = document.getElementById('rep-filter-model');
+
+  // Reset to current month defaults
+  const now = new Date();
+  const firstDay = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const lastDayStr = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`;
+
+  if (dateFrom) {
+    if (dateFrom._scadaDatePicker) dateFrom._scadaDatePicker.setDate(firstDay);
+    else dateFrom.value = firstDay;
+  }
+  if (dateTo) {
+    if (dateTo._scadaDatePicker) dateTo._scadaDatePicker.setDate(lastDayStr);
+    else dateTo.value = lastDayStr;
+  }
+  if (modelEl) {
+    modelEl.value = 'ALL';
+    if (modelEl._scadaDropdown) modelEl._scadaDropdown.sync();
+  }
+  applyReportsFilter(1);
+}
+
+function changeReportsPage(delta) {
+  if (window.sounds) window.sounds.playClick();
+  const newPage = _repCurrentPage + delta;
+  if (newPage >= 1 && newPage <= _repTotalPages) {
+    applyReportsFilter(newPage);
+  }
+}
+
+async function applyReportsFilter(page = 1) {
+  if (window.sounds) window.sounds.playClick();
+  _repCurrentPage = page;
+  const dateFromEl = document.getElementById('rep-filter-date-from');
+  const dateToEl = document.getElementById('rep-filter-date-to');
+  const modelEl = document.getElementById('rep-filter-model');
+
+  const dateFrom = dateFromEl ? dateFromEl.value : '';
+  const dateTo = dateToEl ? dateToEl.value : '';
+  const modelId = modelEl ? modelEl.value : 'ALL';
+
+  const tbody = document.getElementById('history-tbody');
+  if (!tbody) return;
+
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #64748b; padding: 24px;"><i class="ri-loader-4-line scada-spin" style="font-size: 16px; display: inline-block; vertical-align: middle; margin-right: 6px;"></i> Loading dispatch transactions...</td></tr>';
+
+  // Build shared filter params
+  const filterParams = {};
+  if (dateFrom) filterParams.dateFrom = dateFrom;
+  if (dateTo) filterParams.dateTo = dateTo;
+  if (modelId && modelId !== 'ALL') filterParams.modelId = modelId;
+
+  // Fetch stats/charts and history table in parallel
+  const [statsRes] = await Promise.allSettled([
+    api.getFilteredReports(filterParams)
+  ]);
+
+  // Update stats tiles and charts from filtered data
+  if (statsRes.status === 'fulfilled' && statsRes.value) {
+    const monthlyRes = statsRes.value;
+    const repMonth = document.getElementById('rep-month-name');
+    if (repMonth && monthlyRes.metrics) repMonth.textContent = (monthlyRes.metrics.monthName || 'FILTERED').toUpperCase();
+
+    const repBoxes = document.getElementById('rep-boxes-month');
+    if (repBoxes && monthlyRes.metrics) repBoxes.textContent = monthlyRes.metrics.dispatchedThisMonthBoxes || 0;
+
+    const repParts = document.getElementById('rep-parts-month');
+    if (repParts && monthlyRes.metrics) repParts.textContent = (monthlyRes.metrics.dispatchedThisMonthParts || 0).toLocaleString();
+
+    const repTxs = document.getElementById('rep-txs-month');
+    if (repTxs && monthlyRes.metrics) repTxs.textContent = (monthlyRes.metrics.dispatchedThisMonthTxs || 0).toLocaleString();
+
+    const repRej = document.getElementById('rep-rejected-month');
+    if (repRej && monthlyRes.metrics) repRej.textContent = monthlyRes.metrics.rejectedThisMonthBoxes || 0;
+
+    if (typeof Chart !== 'undefined' && monthlyRes.charts) {
       renderDailyChart(monthlyRes.charts.daily);
       renderModelChart(monthlyRes.charts.models);
     }
+  }
 
-    // Historical Table
-    const tbody = document.getElementById('history-tbody');
+  try {
+    const params = { page: _repCurrentPage, limit: _repLimit, ...filterParams };
+    const res = await api.getDispatchHistory(params);
     tbody.innerHTML = '';
 
-    histRes.transactions.forEach(tx => {
+    const totalChip = document.getElementById('rep-total-chip');
+    const pageInfo = document.getElementById('reports-pagination-info');
+    const pageDisplay = document.getElementById('reports-page-display');
+    const btnPrev = document.getElementById('btn-rep-prev');
+    const btnNext = document.getElementById('btn-rep-next');
+
+    const totalTxs = (res && res.total) || 0;
+    _repTotalPages = (res && res.pages) || 1;
+
+    if (totalChip) totalChip.textContent = `${totalTxs} DISPATCHES`;
+    if (pageInfo) {
+      const start = totalTxs === 0 ? 0 : (_repCurrentPage - 1) * _repLimit + 1;
+      const end = Math.min(_repCurrentPage * _repLimit, totalTxs);
+      pageInfo.textContent = `Showing ${start} - ${end} of ${totalTxs} dispatches`;
+    }
+    if (pageDisplay) pageDisplay.textContent = `PAGE ${_repCurrentPage} / ${_repTotalPages || 1}`;
+    if (btnPrev) btnPrev.disabled = _repCurrentPage <= 1;
+    if (btnNext) btnNext.disabled = _repCurrentPage >= _repTotalPages;
+
+    if (!res || !res.transactions || res.transactions.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #64748b; padding: 32px;"><i class="ri-inbox-line" style="font-size: 24px; display: block; margin-bottom: 6px; color: #94a3b8;"></i> No dispatch transactions found matching filter criteria.</td></tr>';
+      return;
+    }
+
+    res.transactions.forEach(tx => {
       const tr = document.createElement('tr');
+      const boxCount = (tx.allocatedBoxes && tx.allocatedBoxes.length) || 0;
+      const partCount = tx.dispatchedPartCount || 0;
+      const completedTime = tx.completedAt ? new Date(tx.completedAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'N/A';
+
       tr.innerHTML = `
-        <td><strong style="color: #38bdf8;">${tx.dispatchId}</strong></td>
-        <td><strong>${tx.modelId}</strong></td>
-        <td>${tx.allocatedBoxes.length} Boxes</td>
-        <td><strong>${tx.dispatchedPartCount} Parts</strong></td>
-        <td>${tx.operatorUsername}</td>
-        <td>${new Date(tx.completedAt).toLocaleString()}</td>
         <td>
-          <button class="btn-chunky btn-primary" onclick="openDispatchBill('${tx.dispatchId}')"><i class="ri-file-text-line"></i> VIEW MANIFEST</button>
+          <span class="copyable-dispatch-id" onclick="copyToClipboard('${tx.dispatchId}', this)" title="Click to copy Dispatch ID ${tx.dispatchId}">
+            <strong style="color: var(--color-primary); font-family: var(--font-mono);">${tx.dispatchId}</strong>
+            <i class="ri-file-copy-line" style="font-size: 11px; opacity: 0.6; color: var(--color-primary);"></i>
+          </span>
+        </td>
+        <td style="font-family: var(--font-mono); font-size: 11px;">${completedTime}</td>
+        <td><strong>${tx.modelId}</strong></td>
+        <td>${boxCount} Boxes</td>
+        <td><strong>${partCount.toLocaleString()} Parts</strong></td>
+        <td style="color: var(--text-secondary);">${tx.operatorUsername || '--'}</td>
+        <td style="text-align: right;">
+          <button class="btn-scada btn-secondary" style="padding: 2px 10px; font-size: 11px; height: 26px;" onclick="openDispatchBill('${tx.dispatchId}')" title="View Dispatch Manifest & Challan">
+            <i class="ri-file-text-line"></i> MANIFEST
+          </button>
         </td>
       `;
       tbody.appendChild(tr);
     });
   } catch (err) {
-    console.error('Failed to load reports:', err.message);
+    console.error('Failed to load dispatch history:', err.message);
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #dc2626; padding: 24px;">Failed to load transactions: ${err.message}</td></tr>`;
   }
 }
 
+async function exportInventoryCsv() {
+  if (window.sounds) window.sounds.playClick();
+  try {
+    const modelEl = document.getElementById('inv-filter-model');
+    const statusEl = document.getElementById('inv-filter-status');
+    const dateFromEl = document.getElementById('inv-filter-date-from');
+    const dateToEl = document.getElementById('inv-filter-date-to');
+    const searchEl = document.getElementById('inv-filter-search');
+
+    const params = new URLSearchParams();
+    const modelId = modelEl ? modelEl.value : 'ALL';
+    const status = statusEl ? statusEl.value : 'ALL';
+    const dateFrom = dateFromEl ? dateFromEl.value : '';
+    const dateTo = dateToEl ? dateToEl.value : '';
+    const search = searchEl ? searchEl.value.trim() : '';
+
+    if (modelId && modelId !== 'ALL') params.append('modelId', modelId);
+    if (status && status !== 'ALL') params.append('status', status);
+    if (dateFrom) params.append('dateFrom', dateFrom);
+    if (dateTo) params.append('dateTo', dateTo);
+    if (search) params.append('search', search);
+
+    const qs = params.toString();
+    const url = `/api/boxes/export-csv${qs ? `?${qs}` : ''}`;
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${api.token}` } });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = `box_inventory_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(downloadUrl);
+    sounds.playSuccess();
+  } catch (err) {
+    sounds.playViolation();
+    await customModal.alert('CSV Export failed: ' + err.message, { title: 'EXPORT ERROR', type: 'danger' });
+  }
+}
+window.exportInventoryCsv = exportInventoryCsv;
+
+// ============================================================================
+// CLIPBOARD & CHART VISUALIZATION MODES
+// ============================================================================
+async function copyToClipboard(text, el) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    if (el) {
+      const originalHtml = el.innerHTML;
+      el.innerHTML = `<span style="color: #059669; font-weight: 700; display: inline-flex; align-items: center; gap: 3px;"><i class="ri-check-line" style="font-size: 12px;"></i> COPIED!</span>`;
+      setTimeout(() => {
+        el.innerHTML = originalHtml;
+      }, 1300);
+    }
+    if (window.sounds) window.sounds.playSuccess();
+  } catch (err) {
+    console.error('Clipboard copy failed:', err);
+  }
+}
+window.copyToClipboard = copyToClipboard;
+
+let _chartVizMode = 'boxes'; // 'boxes' | 'parts'
+let _cachedDailyChartData = null;
+let _cachedModelChartData = null;
+
+function setChartMode(mode) {
+  _chartVizMode = mode;
+  document.querySelectorAll('.rep-viz-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-mode') === mode);
+  });
+  if (window.sounds) window.sounds.playClick();
+  if (_cachedDailyChartData) renderDailyChart(_cachedDailyChartData);
+  if (_cachedModelChartData) renderModelChart(_cachedModelChartData);
+}
+window.setChartMode = setChartMode;
+
 function renderDailyChart(chartData) {
   const ctx = document.getElementById('chart-daily-volume');
-  if (!ctx) return;
+  if (!ctx || !chartData) return;
+  _cachedDailyChartData = chartData;
   if (dailyChart) dailyChart.destroy();
 
+  const isMonthly = !!chartData.isMonthly;
+  const titleEl = document.getElementById('rep-volume-title');
+  if (titleEl) titleEl.textContent = isMonthly ? 'MONTHLY DISPATCH VOLUME' : 'DAILY DISPATCH VOLUME';
+
+  const isParts = _chartVizMode === 'parts';
+  const dataVals = isParts
+    ? (chartData.dataParts || chartData.data || [])
+    : (chartData.dataBoxes || chartData.data || []);
+  const label = isParts ? 'Parts Dispatched' : 'Boxes Dispatched';
+  const strokeColor = isParts ? '#059669' : '#0284c7';
+  const fillColor = isParts ? 'rgba(5, 150, 105, 0.12)' : 'rgba(2, 132, 199, 0.12)';
+
+  const chartType = isMonthly ? 'bar' : 'line';
+  const datasetConfig = isMonthly
+    ? {
+        label,
+        data: dataVals,
+        backgroundColor: strokeColor,
+        borderRadius: 4,
+        maxBarThickness: 38
+      }
+    : {
+        label,
+        data: dataVals,
+        borderColor: strokeColor,
+        backgroundColor: fillColor,
+        fill: true,
+        tension: 0.35,
+        borderWidth: 2,
+        pointRadius: (chartData.labels && chartData.labels.length > 25) ? 2 : 3,
+        pointHoverRadius: 5,
+        pointBackgroundColor: strokeColor
+      };
+
   dailyChart = new Chart(ctx, {
-    type: 'bar',
+    type: chartType,
     data: {
-      labels: chartData.labels,
-      datasets: [{
-        label: 'Boxes Dispatched',
-        data: chartData.data,
-        backgroundColor: '#0284c7',
-        borderColor: '#0369a1',
-        borderWidth: 1,
-        borderRadius: 2
-      }]
+      labels: chartData.labels || [],
+      datasets: [datasetConfig]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
+      interaction: {
+        mode: 'index',
+        intersect: false
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => ` ${ctx.parsed.y.toLocaleString()} ${isParts ? 'Parts' : 'Boxes'}`
+          }
+        }
+      },
       scales: {
-        x: { grid: { color: '#e2e8f0' }, ticks: { color: '#475569', font: { family: "'Inter', sans-serif", size: 10 } } },
-        y: { grid: { color: '#e2e8f0' }, ticks: { color: '#475569', font: { family: "'Inter', sans-serif", size: 10 } }, beginAtZero: true }
+        x: {
+          grid: { color: '#f1f5f9' },
+          ticks: {
+            color: '#64748b',
+            font: { family: "'Inter', sans-serif", size: 10 },
+            maxRotation: 45,
+            autoSkip: true,
+            maxTicksLimit: isMonthly ? 12 : 20
+          }
+        },
+        y: {
+          grid: { color: '#e2e8f0' },
+          ticks: {
+            color: '#64748b',
+            font: { family: "'Inter', sans-serif", size: 10 },
+            precision: 0
+          },
+          beginAtZero: true
+        }
       }
     }
   });
@@ -1214,28 +2327,95 @@ function renderDailyChart(chartData) {
 
 function renderModelChart(chartData) {
   const ctx = document.getElementById('chart-model-dist');
-  if (!ctx) return;
+  if (!ctx || !chartData) return;
+  _cachedModelChartData = chartData;
   if (modelChart) modelChart.destroy();
+
+  const isParts = _chartVizMode === 'parts';
+  const dataVals = isParts
+    ? (chartData.dataParts || chartData.data || [])
+    : (chartData.dataBoxes || chartData.data || []);
 
   modelChart = new Chart(ctx, {
     type: 'doughnut',
     data: {
-      labels: chartData.labels,
+      labels: chartData.labels || [],
       datasets: [{
-        data: chartData.data,
-        backgroundColor: ['#0284c7', '#059669', '#d97706', '#6366f1', '#0ea5e9']
+        data: dataVals,
+        backgroundColor: [
+          '#0284c7', // 1. Sky Blue
+          '#059669', // 2. Emerald Green
+          '#d97706', // 3. Amber Gold
+          '#6366f1', // 4. Indigo Purple
+          '#ef4444', // 5. Crimson Red
+          '#0d9488', // 6. Deep Teal
+          '#8b5cf6', // 7. Electric Violet
+          '#f43f5e', // 8. Warm Rose
+          '#06b6d4', // 9. Azure Cyan
+          '#84cc16', // 10. Spring Lime
+          '#f97316', // 11. Vivid Tangerine
+          '#64748b'  // 12. Steel Slate
+        ]
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#334155', font: { family: "'Inter', sans-serif", size: 11 } } } }
+      plugins: {
+        legend: {
+          position: 'right',
+          labels: {
+            color: '#334155',
+            font: { family: "'Inter', sans-serif", size: 11 },
+            boxWidth: 12,
+            padding: 8
+          }
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => ` ${ctx.label}: ${ctx.parsed.toLocaleString()} ${isParts ? 'Parts' : 'Boxes'}`
+          }
+        }
+      }
     }
   });
 }
 
-function exportCsvReport() {
-  window.open('/api/reports/export-csv', '_blank');
+async function exportCsvReport() {
+  try {
+    const dateFrom = document.getElementById('rep-filter-date-from')?.value || '';
+    const dateTo = document.getElementById('rep-filter-date-to')?.value || '';
+    const params = new URLSearchParams();
+    if (dateFrom) params.append('dateFrom', dateFrom);
+    if (dateTo) params.append('dateTo', dateTo);
+
+    const qs = params.toString();
+    const url = `/api/reports/export-csv${qs ? `?${qs}` : ''}`;
+    const res = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${api.token}`
+      }
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status} Unauthorized/Error`);
+    }
+
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = `dispatch_report_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(downloadUrl);
+    sounds.playSuccess();
+  } catch (err) {
+    sounds.playViolation();
+    await customModal.alert('CSV Export failed: ' + err.message, { title: 'EXPORT ERROR', type: 'danger' });
+  }
 }
 
 // ============================================================================
@@ -1272,7 +2452,7 @@ async function openDispatchBill(dispatchId) {
       boxCard.innerHTML = `
         <div style="display: flex; justify-content: space-between; font-weight: bold; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;">
           <span>${idx + 1}. BOX #${b.batchNumber} (Quantity: ${b.completedCount} Pcs)</span>
-          <span>Closed: ${new Date(b.closedAt).toISOString().slice(0, 16).replace('T', ' ')}</span>
+          <span>Produced: ${new Date(b.closedAt).toISOString().slice(0, 16).replace('T', ' ')}</span>
         </div>
         <div style="font-size: 9pt; margin-top: 4px; color: #475569;">
           <strong>Batch QR:</strong> ${b.batchQrData}
@@ -1297,12 +2477,55 @@ function printDispatchBill() {
 // ============================================================================
 // VIEW 6: SYSTEM & USERS (MGR / ADMIN)
 // ============================================================================
-async function loadSystemView() {
+async function loadSystemView(showFeedback = false) {
+  const refreshBtn = document.getElementById('btn-refresh-telemetry');
+  const refreshIcon = document.getElementById('icon-refresh-telemetry');
+  if (refreshIcon) refreshIcon.classList.add('scada-spin');
+
   try {
     const statusRes = await api.getSystemStatus();
-    document.getElementById('sys-db-host').textContent = `${statusRes.database.host || 'localhost'} (${statusRes.database.name || 'plc_sticker'})`;
-    document.getElementById('sys-sync-watermark').textContent = statusRes.sync.watermark ? new Date(statusRes.sync.watermark).toLocaleString() : 'Today (Initialized)';
-    document.getElementById('sys-synced-count').textContent = statusRes.sync.totalSyncedBoxes;
+    const dbHostEl = document.getElementById('sys-db-host');
+    const dbWatermarkEl = document.getElementById('sys-sync-watermark');
+    const dbSyncedCountEl = document.getElementById('sys-synced-count');
+
+    if (statusRes.database && statusRes.database.isConnected) {
+      if (dbHostEl) {
+        dbHostEl.style.color = 'var(--color-primary)';
+        dbHostEl.textContent = `${statusRes.database.host} (${statusRes.database.name || 'default'})`;
+      }
+      if (dbWatermarkEl) {
+        dbWatermarkEl.textContent = statusRes.sync && statusRes.sync.watermark ? new Date(statusRes.sync.watermark).toLocaleString() : 'Live (Initialized)';
+      }
+    } else {
+      if (dbHostEl) {
+        dbHostEl.style.color = '#ef4444';
+        dbHostEl.textContent = 'OFFLINE / DISCONNECTED';
+      }
+      if (dbWatermarkEl) {
+        dbWatermarkEl.textContent = 'Database offline';
+      }
+    }
+
+    if (dbSyncedCountEl) {
+      dbSyncedCountEl.textContent = (statusRes.sync && statusRes.sync.totalSyncedBoxes != null) ? statusRes.sync.totalSyncedBoxes : '0';
+    }
+
+    // Pre-fill builder fields with active database configuration if not user-edited
+    const hostInput = document.getElementById('sys-db-builder-host');
+    const portInput = document.getElementById('sys-db-builder-port');
+    const nameInput = document.getElementById('sys-db-builder-name');
+    if (statusRes.database) {
+      if (hostInput && !hostInput.dataset.userEdited && statusRes.database.host) {
+        hostInput.value = statusRes.database.host;
+      }
+      if (portInput && !portInput.dataset.userEdited && statusRes.database.port) {
+        portInput.value = String(statusRes.database.port);
+      }
+      if (nameInput && !nameInput.dataset.userEdited && statusRes.database.name) {
+        nameInput.value = statusRes.database.name;
+      }
+      updateComposedDbUri();
+    }
 
     // Load COM ports and serial settings
     if (api.currentUser.role === 'admin' || api.currentUser.role === 'manager') {
@@ -1320,33 +2543,50 @@ async function loadSystemView() {
         if (document.getElementById('sys-com-stopbits') && statusRes.scanner.stopBits) {
           document.getElementById('sys-com-stopbits').value = String(statusRes.scanner.stopBits);
         }
+        if (document.getElementById('sys-com-delimiter') && statusRes.scanner.delimiter) {
+          const delimEl = document.getElementById('sys-com-delimiter');
+          const dVal = String(statusRes.scanner.delimiter);
+          if (['CRLF', 'CR', 'LF', 'TAB'].includes(dVal)) {
+            delimEl.value = dVal;
+          } else if (dVal.includes('CRLF') || dVal === '\r\n') {
+            delimEl.value = 'CRLF';
+          } else if (dVal.includes('CR') || dVal === '\r') {
+            delimEl.value = 'CR';
+          } else if (dVal.includes('LF') || dVal === '\n') {
+            delimEl.value = 'LF';
+          } else if (dVal.includes('TAB') || dVal === '\t') {
+            delimEl.value = 'TAB';
+          }
+        }
         const badge = document.getElementById('sys-com-status-badge');
         if (badge) {
           badge.className = statusRes.scanner.isConnected ? 'badge badge-available' : 'badge badge-hold';
-          badge.textContent = statusRes.scanner.isConnected ? 'CONNECTED // READY' : 'OFFLINE // READY';
+          badge.textContent = statusRes.scanner.isConnected ? 'CONNECTED' : 'OFFLINE';
         }
+      }
+
+      // Convert all system selects into SCADA custom dropdowns
+      if (window.scadaDropdown) {
+        window.scadaDropdown.initAll();
+        window.scadaDropdown.syncAll();
       }
     }
 
     // Load license
     loadLicenseInfo();
+
+    // Load audit reasons
+    loadAuditReasons();
+
+    if (showFeedback && refreshBtn) {
+      const origText = refreshBtn.innerHTML;
+      refreshBtn.innerHTML = '<i class="ri-checkbox-circle-line" style="color: #059669;"></i> REFRESHED';
+      setTimeout(() => { refreshBtn.innerHTML = origText; }, 1800);
+    }
   } catch (err) {
     console.error('Failed to load system view:', err.message);
-  }
-}
-
-async function handleSeedDummyData() {
-  const ok = await customModal.confirm('Populate/refresh rich dummy data? This will load available bins, held bins, rejected bins, and past dispatch history.', { title: 'SEED TEST DATA' });
-  if (!ok) return;
-  try {
-    const res = await api.seedDummyData(true);
-    sounds.playSuccess();
-    await customModal.alert(res.message, { title: 'SEED DATA SUCCESS', type: 'success' });
-    loadSystemView();
-    if (typeof loadInventoryView === 'function') loadInventoryView();
-    if (typeof loadModelSelector === 'function') loadModelSelector();
-  } catch (err) {
-    await customModal.alert('Failed to seed dummy data: ' + err.message, { title: 'SEED ERROR', type: 'danger' });
+  } finally {
+    if (refreshIcon) refreshIcon.classList.remove('scada-spin');
   }
 }
 
@@ -1410,41 +2650,195 @@ async function handleActivateLicense() {
   }
 }
 
-async function testDatabaseConnection() {
-  const uri = document.getElementById('sys-db-uri-input').value.trim();
-  if (!uri) return await customModal.alert('Enter MongoDB URI', { title: 'DATABASE URI REQUIRED', type: 'warning' });
+let _dbConfigMode = 'builder';
 
+function setDbConfigMode(mode) {
+  _dbConfigMode = mode;
+  const btnBuilder = document.getElementById('btn-db-mode-builder');
+  const btnRaw = document.getElementById('btn-db-mode-raw');
+  const builderContainer = document.getElementById('sys-db-builder-container');
+  const rawContainer = document.getElementById('sys-db-raw-container');
+
+  if (mode === 'raw') {
+    if (btnBuilder) btnBuilder.className = 'btn-scada btn-secondary';
+    if (btnRaw) btnRaw.className = 'btn-scada btn-primary';
+    if (builderContainer) builderContainer.style.display = 'none';
+    if (rawContainer) rawContainer.style.display = 'block';
+  } else {
+    if (btnBuilder) btnBuilder.className = 'btn-scada btn-primary';
+    if (btnRaw) btnRaw.className = 'btn-scada btn-secondary';
+    if (builderContainer) builderContainer.style.display = 'block';
+    if (rawContainer) rawContainer.style.display = 'none';
+    updateComposedDbUri();
+  }
+}
+
+function toggleDbAuthFields() {
+  const authMode = document.getElementById('sys-db-builder-authmode')?.value || 'none';
+  const authFields = document.getElementById('sys-db-auth-fields');
+  if (authFields) {
+    authFields.style.display = authMode === 'userpass' ? 'grid' : 'none';
+  }
+  updateComposedDbUri();
+}
+
+function updateComposedDbUri() {
+  const host = (document.getElementById('sys-db-builder-host')?.value || '').trim() || 'localhost';
+  const port = (document.getElementById('sys-db-builder-port')?.value || '').trim() || '27017';
+  const dbName = (document.getElementById('sys-db-builder-name')?.value || '').trim();
+  const authMode = document.getElementById('sys-db-builder-authmode')?.value || 'none';
+  const previewEl = document.getElementById('sys-db-composed-preview');
+
+  let previewUri = 'mongodb://';
+  let realUri = 'mongodb://';
+
+  if (authMode === 'userpass') {
+    const user = (document.getElementById('sys-db-builder-user')?.value || '').trim();
+    const pass = document.getElementById('sys-db-builder-pass')?.value || '';
+    const authDb = (document.getElementById('sys-db-builder-authdb')?.value || '').trim() || 'admin';
+
+    const displayUser = user || 'user';
+    const displayPass = pass ? '••••••••' : 'pass';
+    const authQuery = authDb ? `?authSource=${encodeURIComponent(authDb)}` : '';
+
+    previewUri += `${encodeURIComponent(displayUser)}:${displayPass}@${host}:${port}/${encodeURIComponent(dbName || '<database>')}${authQuery}`;
+    realUri += `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}/${encodeURIComponent(dbName)}${authQuery}`;
+  } else {
+    previewUri += `${host}:${port}/${encodeURIComponent(dbName || '<database>')}`;
+    realUri += `${host}:${port}/${encodeURIComponent(dbName)}`;
+  }
+
+  if (previewEl) {
+    previewEl.textContent = previewUri;
+  }
+
+  // Also sync to raw input
+  const rawInput = document.getElementById('sys-db-uri-input');
+  if (rawInput && _dbConfigMode === 'builder') {
+    rawInput.value = realUri;
+  }
+
+  return { realUri, dbName, host, port, authMode };
+}
+
+function getEffectiveDbUri() {
+  if (_dbConfigMode === 'raw') {
+    const input = document.getElementById('sys-db-uri-input');
+    const uri = input ? input.value.trim() : '';
+    if (!uri) {
+      return { error: 'Please enter a raw MongoDB connection URI.' };
+    }
+    return { uri };
+  }
+
+  // Builder mode:
+  const host = (document.getElementById('sys-db-builder-host')?.value || '').trim();
+  const port = (document.getElementById('sys-db-builder-port')?.value || '').trim();
+  const dbName = (document.getElementById('sys-db-builder-name')?.value || '').trim();
+  const authMode = document.getElementById('sys-db-builder-authmode')?.value || 'none';
+
+  if (!host) {
+    return { error: 'Host / IP address is required (e.g. localhost or 127.0.0.1).' };
+  }
+  if (!port) {
+    return { error: 'Port is required (default 27017).' };
+  }
+  if (!dbName) {
+    return { error: 'Database name is required.' };
+  }
+
+  let uri = 'mongodb://';
+  if (authMode === 'userpass') {
+    const user = (document.getElementById('sys-db-builder-user')?.value || '').trim();
+    const pass = document.getElementById('sys-db-builder-pass')?.value || '';
+    const authDb = (document.getElementById('sys-db-builder-authdb')?.value || '').trim() || 'admin';
+
+    if (!user) {
+      return { error: 'Username is required when authentication is enabled.' };
+    }
+    const authQuery = authDb ? `?authSource=${encodeURIComponent(authDb)}` : '';
+    uri += `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}/${encodeURIComponent(dbName)}${authQuery}`;
+  } else {
+    uri += `${host}:${port}/${encodeURIComponent(dbName)}`;
+  }
+
+  return { uri };
+}
+
+async function testDatabaseConnection() {
   const resultBox = document.getElementById('sys-db-test-result');
-  resultBox.textContent = 'Testing connection...';
-  resultBox.style.color = '#38bdf8';
+  const uriData = getEffectiveDbUri();
+  if (uriData.error) {
+    return await customModal.alert(uriData.error, { title: 'INVALID CONFIGURATION', type: 'warning' });
+  }
+  const uri = uriData.uri;
+
+  if (resultBox) {
+    resultBox.textContent = 'Testing connection reachability & credentials...';
+    resultBox.style.color = '#38bdf8';
+  }
 
   try {
     const res = await api.testDatabase(uri);
     if (res.success) {
-      resultBox.textContent = res.message;
-      resultBox.style.color = '#34d399';
+      sounds.playSuccess();
+      if (resultBox) {
+        resultBox.textContent = res.message;
+        resultBox.style.color = '#059669';
+      }
     } else {
-      resultBox.textContent = res.message;
-      resultBox.style.color = '#f87171';
+      sounds.playViolation();
+      if (resultBox) {
+        resultBox.textContent = res.message;
+        resultBox.style.color = '#ef4444';
+      }
     }
   } catch (err) {
-    resultBox.textContent = 'Test failed: ' + err.message;
-    resultBox.style.color = '#f87171';
+    sounds.playViolation();
+    if (resultBox) {
+      resultBox.textContent = 'Test failed: ' + err.message;
+      resultBox.style.color = '#ef4444';
+    }
   }
 }
 
 async function saveDatabaseConfig() {
-  const uri = document.getElementById('sys-db-uri-input').value.trim();
-  if (!uri) return await customModal.alert('Enter MongoDB URI', { title: 'DATABASE URI REQUIRED', type: 'warning' });
-  const ok = await customModal.confirm('Update active MongoDB URI and reconnect?', { title: 'CONFIRM DB RECONFIGURATION', danger: true });
+  const uriData = getEffectiveDbUri();
+  if (uriData.error) {
+    return await customModal.alert(uriData.error, { title: 'INVALID CONFIGURATION', type: 'warning' });
+  }
+  const uri = uriData.uri;
+
+  const ok = await customModal.confirm('Update persistent MongoDB connection URI and reconnect?', { title: 'RECONNECT DATABASE', danger: true });
   if (!ok) return;
+
+  const resultBox = document.getElementById('sys-db-test-result');
+  if (resultBox) {
+    resultBox.textContent = 'Connecting and updating database...';
+    resultBox.style.color = '#38bdf8';
+  }
 
   try {
     const res = await api.saveDatabaseConfig(uri);
-    await customModal.alert(res.message, { title: 'DATABASE CONFIG SAVED', type: 'success' });
-    loadSystemView();
+    sounds.playSuccess();
+    if (resultBox) {
+      resultBox.textContent = res.message;
+      resultBox.style.color = '#059669';
+    }
+    const rawInput = document.getElementById('sys-db-uri-input');
+    if (rawInput) rawInput.value = '';
+    const passInput = document.getElementById('sys-db-builder-pass');
+    if (passInput) passInput.value = '';
+    updateComposedDbUri();
+    await customModal.alert(res.message, { title: 'DATABASE CONNECTED', type: 'success' });
+    loadSystemView(true);
   } catch (err) {
-    await customModal.alert('Save failed: ' + err.message, { title: 'SAVE ERROR', type: 'danger' });
+    sounds.playViolation();
+    if (resultBox) {
+      resultBox.textContent = 'Connection failed: ' + err.message;
+      resultBox.style.color = '#ef4444';
+    }
+    await customModal.alert('Save & reconnect failed: ' + err.message, { title: 'DATABASE ERROR', type: 'danger' });
   }
 }
 
@@ -1470,6 +2864,10 @@ async function loadComPortsList() {
         portSelect.appendChild(opt);
       });
     }
+
+    if (window.scadaDropdown) {
+      window.scadaDropdown.attach(portSelect).sync();
+    }
   } catch (err) {
     console.warn('Could not list COM ports:', err.message);
   }
@@ -1483,28 +2881,40 @@ async function saveComPortConfig() {
   const parity = document.getElementById('sys-com-parity')?.value || 'none';
   const delimiter = document.getElementById('sys-com-delimiter')?.value || 'CRLF';
   const msgEl = document.getElementById('sys-com-msg');
+  const badge = document.getElementById('sys-com-status-badge');
 
   try {
     const res = await api.saveComConfig({ port, baudRate, dataBits, stopBits, parity, delimiter });
-    sounds.playSuccess();
-    if (msgEl) {
-      msgEl.style.color = '#059669';
-      msgEl.textContent = res.message;
+    if (res.success && res.isConnected) {
+      sounds.playSuccess();
+      if (msgEl) {
+        msgEl.style.color = '#059669';
+        msgEl.textContent = res.message;
+      }
+      if (badge) {
+        badge.className = 'badge badge-available';
+        badge.textContent = `CONNECTED // ${port}`;
+      }
     } else {
-      await customModal.alert(res.message, { title: 'SERIAL CONFIG SAVED', type: 'success' });
-    }
-    const badge = document.getElementById('sys-com-status-badge');
-    if (badge) {
-      badge.className = 'badge badge-available';
-      badge.textContent = `${port} @ ${baudRate} BPS`;
+      sounds.playViolation();
+      if (msgEl) {
+        msgEl.style.color = '#ef4444';
+        msgEl.textContent = res.message || res.error || 'Port connection failed';
+      }
+      if (badge) {
+        badge.className = 'badge badge-hold';
+        badge.textContent = 'OFFLINE';
+      }
     }
   } catch (err) {
     sounds.playViolation();
     if (msgEl) {
       msgEl.style.color = '#ef4444';
-      msgEl.textContent = 'Configuration error: ' + err.message;
-    } else {
-      await customModal.alert('COM config failed: ' + err.message, { title: 'SERIAL CONFIG ERROR', type: 'danger' });
+      msgEl.textContent = err.message || 'Configuration error';
+    }
+    if (badge) {
+      badge.className = 'badge badge-hold';
+      badge.textContent = 'OFFLINE';
     }
   }
 }
@@ -1541,31 +2951,56 @@ async function loadUsersTable() {
         createBtn.disabled = false;
         createBtn.style.opacity = '1';
         createBtn.style.cursor = 'pointer';
-        createBtn.title = 'Add new operator account';
+        createBtn.title = 'Add new account';
       }
     }
 
     const currentUser = api.currentUser;
-    const isAdmin = currentUser && currentUser.role === 'admin';
+    const currentUserId = currentUser ? (currentUser.id || currentUser._id) : null;
+    const currentUsername = currentUser ? (currentUser.username || '').toLowerCase() : '';
 
     if (tbody) {
       if (_currentUsersList.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b;">No users registered.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 24px;">No registered operators found on this terminal.</td></tr>';
       } else {
         _currentUsersList.forEach(u => {
           const tr = document.createElement('tr');
-          const isSelf = currentUser && (currentUser.id === u._id || currentUser.username.toLowerCase() === u.username.toLowerCase());
-          const deleteBtnHtml = (isAdmin && !isSelf)
-            ? `<button class="btn-chunky text-danger" style="margin-left: 6px;" onclick="handleDeleteUser('${u._id}', '${u.username}')"><i class="ri-delete-bin-line"></i> DELETE</button>`
-            : '';
+          const isSelf = currentUserId && (
+            u._id === currentUserId ||
+            (u.username && u.username.toLowerCase() === currentUsername)
+          );
+
+          const statusToggle = `
+            <div class="scada-status-rocker">
+              <button type="button" class="rocker-btn ${u.active ? 'active' : 'inactive'}"
+                id="user-toggle-${u._id}"
+                ${isSelf ? 'disabled' : ''}
+                onclick="handleToggleUserActive('${u._id}', '${u.username}', ${u.active ? 'true' : 'false'})"
+                title="${isSelf ? 'Cannot deactivate your own active session' : (u.active ? 'Click to deactivate operator' : 'Click to activate operator')}">
+                <span class="rocker-led"></span>
+                <span>${u.active ? 'ACTIVE' : 'INACTIVE'}</span>
+              </button>
+            </div>
+          `;
+
+          const editBtn = `<button class="btn-action-icon btn-action-edit" onclick="openEditUserModal('${u._id}')" title="Edit operator profile"><i class="ri-edit-line"></i> EDIT</button>`;
+          const resetBtn = `<button class="btn-action-icon btn-action-reset" onclick="openResetPasswordModal('${u._id}', '${u.username}')" title="Reset password"><i class="ri-key-line"></i> RESET PWD</button>`;
+          const deleteBtn = `<button class="btn-action-icon btn-action-delete" onclick="handleDeleteUser('${u._id}', '${u.username}')" title="Permanently delete account" ${isSelf ? 'disabled style="opacity:0.35; cursor:not-allowed;"' : ''}><i class="ri-delete-bin-line"></i> DELETE</button>`;
+
           tr.innerHTML = `
-            <td><strong>${u.username}</strong> ${isSelf ? '<span class="badge" style="background:#e0f2fe; color:#0284c7; font-size:9px; margin-left:4px;">YOU</span>' : ''}</td>
-            <td>${u.fullName}</td>
-            <td><span class="badge badge-verified">${u.role.toUpperCase()}</span></td>
-            <td>${u.active ? '<span style="color: #059669; font-weight:700;">ACTIVE</span>' : '<span style="color: #dc2626; font-weight:700;">INACTIVE</span>'}</td>
+            <td>${statusToggle}</td>
             <td>
-              <button class="btn-chunky" onclick="resetUserPassword('${u._id}', '${u.username}')"><i class="ri-key-line"></i> RESET PWD</button>
-              ${deleteBtnHtml}
+              <strong style="color: var(--text-heading); font-size: 13px;">${u.username}</strong>
+              ${isSelf ? '<span class="badge" style="background:#e0f2fe; color:#0284c7; font-size:9px; margin-left:6px; font-weight:800;">YOU</span>' : ''}
+            </td>
+            <td>${u.fullName || '--'}</td>
+            <td><span class="badge badge-verified">${(u.role || 'operator').toUpperCase()}</span></td>
+            <td style="text-align: right; padding-right: 14px;">
+              <div class="user-actions-group" style="justify-content: flex-end;">
+                ${editBtn}
+                ${resetBtn}
+                ${deleteBtn}
+              </div>
             </td>
           `;
           tbody.appendChild(tr);
@@ -1577,63 +3012,570 @@ async function loadUsersTable() {
   }
 }
 
-async function handleCreateUser() {
+// ----------------------------------------------------------------------------
+// 1. CREATE USER (SINGLE POPUP MODAL)
+// ----------------------------------------------------------------------------
+function handleCreateUser() {
   if (_currentUsersList && _currentUsersList.length >= 10) {
-    return await customModal.alert('Terminal operator capacity reached! A maximum of 10 users are allowed on this terminal. Please delete or deactivate an existing user before creating a new one.', {
+    return customModal.alert('Terminal operator capacity reached! A maximum of 10 users are allowed on this terminal. Delete an existing account before creating a new one.', {
       title: 'USER QUOTA EXCEEDED (10/10)',
       type: 'warning'
     });
   }
 
-  const username = await customModal.prompt('Enter new username:', { title: 'CREATE USER - USERNAME' });
-  if (!username) return;
-  const fullName = await customModal.prompt('Enter full name:', { title: 'CREATE USER - FULL NAME' });
-  if (!fullName) return;
-  const password = await customModal.prompt('Enter temporary password (min 6 chars):', { title: 'CREATE USER - PASSWORD', inputType: 'password' });
-  if (!password || password.length < 6) {
-    return await customModal.alert('Password must be at least 6 characters.', { title: 'PASSWORD TOO SHORT', type: 'warning' });
-  }
-  const role = await customModal.prompt('Enter role (operator / supervisor / manager / admin):', { title: 'CREATE USER - ROLE', defaultValue: 'operator' });
-  if (!role) return;
+  const modal = document.getElementById('create-user-modal');
+  if (!modal) return;
 
-  try {
-    await api.createUser({ username, fullName, password, role: role.toLowerCase() });
-    await customModal.alert(`User ${username} created successfully!`, { title: 'USER CREATED', type: 'success' });
-    loadUsersTable();
-  } catch (err) {
-    await customModal.alert('Create user failed: ' + err.message, { title: 'CREATE USER ERROR', type: 'danger' });
+  document.getElementById('cu-username').value = '';
+  document.getElementById('cu-fullname').value = '';
+  document.getElementById('cu-password').value = '';
+  const roleSelect = document.getElementById('cu-role');
+  if (roleSelect) {
+    roleSelect.value = 'operator';
+    if (window.scadaDropdown) {
+      const dd = window.scadaDropdown.attach(roleSelect);
+      if (dd && typeof dd.sync === 'function') dd.sync();
+    }
+  }
+  const errBox = document.getElementById('cu-error');
+  if (errBox) errBox.style.display = 'none';
+
+  modal.style.display = 'flex';
+  modal.classList.add('active');
+  setTimeout(() => document.getElementById('cu-username')?.focus(), 50);
+}
+
+function closeCreateUserModal() {
+  const modal = document.getElementById('create-user-modal');
+  if (modal) {
+    modal.style.display = 'none';
+    modal.classList.remove('active');
   }
 }
 
+async function submitCreateUser(e) {
+  e.preventDefault();
+  const username = document.getElementById('cu-username').value.trim();
+  const fullName = document.getElementById('cu-fullname').value.trim();
+  const password = document.getElementById('cu-password').value;
+  const role = document.getElementById('cu-role').value;
+  const errBox = document.getElementById('cu-error');
+
+  if (!username || !fullName) {
+    if (errBox) {
+      errBox.textContent = 'Please fill in both username and full name.';
+      errBox.style.display = 'block';
+    }
+    return;
+  }
+
+  if (!password || password.length < 6) {
+    if (errBox) {
+      errBox.textContent = 'Password must be at least 6 characters long.';
+      errBox.style.display = 'block';
+    }
+    return;
+  }
+
+  try {
+    await api.createUser({ username, fullName, password, role });
+    sounds.playSuccess();
+    closeCreateUserModal();
+    await customModal.alert(`Account '${username}' created successfully!`, { title: 'USER CREATED', type: 'success' });
+    loadUsersTable();
+  } catch (err) {
+    sounds.playViolation();
+    if (errBox) {
+      errBox.textContent = err.message || 'Failed to create user';
+      errBox.style.display = 'block';
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 2. EDIT USER MODAL
+// ----------------------------------------------------------------------------
+function openEditUserModal(userId) {
+  const user = _currentUsersList.find(u => u._id === userId);
+  if (!user) return;
+
+  const modal = document.getElementById('edit-user-modal');
+  if (!modal) return;
+
+  const currentUser = api.currentUser;
+  const currentUserId = currentUser ? (currentUser.id || currentUser._id) : null;
+  const isSelf = currentUserId && (user._id === currentUserId);
+
+  document.getElementById('eu-id').value = user._id;
+  document.getElementById('eu-username').value = user.username;
+  document.getElementById('eu-fullname').value = user.fullName || '';
+  
+  const roleSelect = document.getElementById('eu-role');
+  if (roleSelect) {
+    roleSelect.value = user.role || 'operator';
+    roleSelect.disabled = isSelf; // Cannot demote own admin account
+    roleSelect.title = isSelf ? 'Cannot modify your own administrator role' : '';
+    if (window.scadaDropdown) {
+      const dd = window.scadaDropdown.attach(roleSelect);
+      if (dd && typeof dd.sync === 'function') dd.sync();
+    }
+  }
+
+  const activeSelect = document.getElementById('eu-active');
+  if (activeSelect) {
+    activeSelect.value = String(user.active !== false);
+    activeSelect.disabled = isSelf; // Cannot deactivate own account
+    activeSelect.title = isSelf ? 'Cannot deactivate your own active account' : '';
+    if (window.scadaDropdown) {
+      const dd = window.scadaDropdown.attach(activeSelect);
+      if (dd && typeof dd.sync === 'function') dd.sync();
+    }
+  }
+
+  const errBox = document.getElementById('eu-error');
+  if (errBox) errBox.style.display = 'none';
+
+  modal.style.display = 'flex';
+  modal.classList.add('active');
+  setTimeout(() => document.getElementById('eu-fullname')?.focus(), 50);
+}
+
+function closeEditUserModal() {
+  const modal = document.getElementById('edit-user-modal');
+  if (modal) {
+    modal.style.display = 'none';
+    modal.classList.remove('active');
+  }
+}
+
+async function submitEditUser(e) {
+  e.preventDefault();
+  const userId = document.getElementById('eu-id').value;
+  const fullName = document.getElementById('eu-fullname').value.trim();
+  const role = document.getElementById('eu-role').value;
+  const active = document.getElementById('eu-active').value === 'true';
+  const errBox = document.getElementById('eu-error');
+
+  if (!fullName) {
+    if (errBox) {
+      errBox.textContent = 'Full name cannot be empty.';
+      errBox.style.display = 'block';
+    }
+    return;
+  }
+
+  try {
+    const res = await api.updateUser(userId, { fullName, role, active });
+    sounds.playSuccess();
+    closeEditUserModal();
+    await customModal.alert(res.message || 'Operator details updated successfully!', { title: 'ACCOUNT UPDATED', type: 'success' });
+    loadUsersTable();
+  } catch (err) {
+    sounds.playViolation();
+    if (errBox) {
+      errBox.textContent = err.message || 'Failed to update operator';
+      errBox.style.display = 'block';
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 3. RESET PASSWORD MODAL
+// ----------------------------------------------------------------------------
+function openResetPasswordModal(userId, username) {
+  const modal = document.getElementById('reset-password-modal');
+  if (!modal) return;
+
+  document.getElementById('rp-id').value = userId;
+  const nameEl = document.getElementById('rp-username');
+  if (nameEl) nameEl.textContent = username;
+
+  document.getElementById('rp-password').value = '';
+  document.getElementById('rp-confirm').value = '';
+
+  const errBox = document.getElementById('rp-error');
+  if (errBox) errBox.style.display = 'none';
+
+  modal.style.display = 'flex';
+  modal.classList.add('active');
+  setTimeout(() => document.getElementById('rp-password')?.focus(), 50);
+}
+
+function closeResetPasswordModal() {
+  const modal = document.getElementById('reset-password-modal');
+  if (modal) {
+    modal.style.display = 'none';
+    modal.classList.remove('active');
+  }
+}
+
+async function submitResetPassword(e) {
+  e.preventDefault();
+  const userId = document.getElementById('rp-id').value;
+  const username = document.getElementById('rp-username').textContent;
+  const password = document.getElementById('rp-password').value;
+  const confirm = document.getElementById('rp-confirm').value;
+  const errBox = document.getElementById('rp-error');
+
+  if (!password || password.length < 6) {
+    if (errBox) {
+      errBox.textContent = 'Password must be at least 6 characters long.';
+      errBox.style.display = 'block';
+    }
+    return;
+  }
+
+  if (password !== confirm) {
+    if (errBox) {
+      errBox.textContent = 'Passwords do not match. Please re-enter.';
+      errBox.style.display = 'block';
+    }
+    return;
+  }
+
+  try {
+    const res = await api.resetPassword(userId, password);
+    sounds.playSuccess();
+    closeResetPasswordModal();
+    await customModal.alert(res.message || `Password successfully reset for '${username}'.`, { title: 'PASSWORD RESET', type: 'success' });
+  } catch (err) {
+    sounds.playViolation();
+    if (errBox) {
+      errBox.textContent = err.message || 'Password reset failed';
+      errBox.style.display = 'block';
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 4. TOGGLE OPERATOR ACTIVE / DEACTIVATE
+// ----------------------------------------------------------------------------
+async function handleToggleUserActive(userId, username, currentActive) {
+  const actionText = currentActive ? 'deactivate' : 'activate';
+  const ok = await customModal.confirm(`Are you sure you want to ${actionText} account "${username}"?`, {
+    title: `${actionText.toUpperCase()} ACCOUNT`,
+    danger: currentActive
+  });
+  if (!ok) return;
+
+  try {
+    const res = await api.toggleUserActive(userId);
+    sounds.playSuccess();
+    await customModal.alert(res.message, { title: 'STATUS UPDATED', type: 'success' });
+    loadUsersTable();
+  } catch (err) {
+    sounds.playViolation();
+    await customModal.alert('Status toggle failed: ' + err.message, { title: 'ACTION FAILED', type: 'danger' });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 5. DELETE ACCOUNT
+// ----------------------------------------------------------------------------
 async function handleDeleteUser(userId, username) {
-  const confirmed = await customModal.confirm(`Are you sure you want to permanently delete operator account "${username}"?`, {
-    title: 'CONFIRM DELETE OPERATOR',
+  const confirmed = await customModal.confirm(`Are you sure you want to permanently delete account "${username}"? This action cannot be undone.`, {
+    title: 'CONFIRM DELETE ACCOUNT',
     danger: true
   });
   if (!confirmed) return;
 
   try {
     const res = await api.deleteUser(userId);
-    await customModal.alert(res.message || `User account '${username}' deleted.`, { title: 'ACCOUNT DELETED', type: 'success' });
+    sounds.playSuccess();
+    await customModal.alert(res.message || `User account '${username}' permanently deleted.`, { title: 'ACCOUNT DELETED', type: 'success' });
     loadUsersTable();
   } catch (err) {
+    sounds.playViolation();
     await customModal.alert('Delete failed: ' + err.message, { title: 'DELETE FAILED', type: 'danger' });
   }
 }
 
-async function resetUserPassword(userId, username) {
-  const newPwd = await customModal.prompt(`Enter new password for ${username}:`, { title: 'RESET PASSWORD', inputType: 'password' });
-  if (!newPwd || newPwd.length < 6) {
-    return await customModal.alert('Password must be at least 6 characters.', { title: 'PASSWORD TOO SHORT', type: 'warning' });
-  }
+// Expose all user management handlers globally on window
+window.loadUsersTable = loadUsersTable;
+window.handleCreateUser = handleCreateUser;
+window.closeCreateUserModal = closeCreateUserModal;
+window.submitCreateUser = submitCreateUser;
+window.openEditUserModal = openEditUserModal;
+window.closeEditUserModal = closeEditUserModal;
+window.submitEditUser = submitEditUser;
+window.openResetPasswordModal = openResetPasswordModal;
+window.closeResetPasswordModal = closeResetPasswordModal;
+window.submitResetPassword = submitResetPassword;
+window.handleToggleUserActive = handleToggleUserActive;
+window.handleDeleteUser = handleDeleteUser;
 
+// ============================================================================
+// QUALITY AUDIT REASONS (HOLD & REJECT) MANAGEMENT
+// ============================================================================
+let _currentAuditReasons = {
+  holdReasons: [
+    'Visual Quality Inspection',
+    'Packaging / Label Defect',
+    'Lab Testing Pending',
+    'Dimensional Tolerance Check',
+    'Supervisor Discretion'
+  ],
+  rejectionReasons: [
+    'Damaged QR / Barcode Sticker',
+    'Defective Part Inside Box',
+    'Box Packaging Crushed',
+    'Quantity Mismatch',
+    'Laser Marking Illegible',
+    'Tape Seal Damaged'
+  ]
+};
+let _activeReasonsCategory = 'hold';
+
+async function loadAuditReasons() {
   try {
-    await api.resetPassword(userId, newPwd);
-    await customModal.alert(`Password reset for ${username}!`, { title: 'PASSWORD RESET', type: 'success' });
+    const res = await api.getAuditReasons();
+    if (res.success) {
+      _currentAuditReasons.holdReasons = res.holdReasons || [];
+      _currentAuditReasons.rejectionReasons = res.rejectionReasons || [];
+      renderReasonsList();
+      populateModalReasonDropdowns();
+    }
   } catch (err) {
-    await customModal.alert('Password reset failed: ' + err.message, { title: 'RESET FAILED', type: 'danger' });
+    console.warn('Could not load audit reasons:', err.message);
   }
 }
+
+function switchReasonsCategory(category) {
+  _activeReasonsCategory = category;
+  const btnHold = document.getElementById('btn-reasons-tab-hold');
+  const btnReject = document.getElementById('btn-reasons-tab-reject');
+  const badgeHold = document.getElementById('badge-hold-reasons-count');
+  const badgeReject = document.getElementById('badge-reject-reasons-count');
+  const inputEl = document.getElementById('sys-new-reason-input');
+
+  if (category === 'hold') {
+    if (btnHold) btnHold.className = 'btn-scada btn-primary';
+    if (btnReject) btnReject.className = 'btn-scada btn-secondary';
+    if (badgeHold) {
+      badgeHold.style.background = 'rgba(255,255,255,0.25)';
+      badgeHold.style.color = '#fff';
+    }
+    if (badgeReject) {
+      badgeReject.style.background = 'rgba(0,0,0,0.08)';
+      badgeReject.style.color = '#334155';
+    }
+    if (inputEl) inputEl.placeholder = 'Type new hold reason (e.g. Surface Scratches)...';
+  } else {
+    if (btnHold) btnHold.className = 'btn-scada btn-secondary';
+    if (btnReject) btnReject.className = 'btn-scada btn-primary';
+    if (badgeHold) {
+      badgeHold.style.background = 'rgba(0,0,0,0.08)';
+      badgeHold.style.color = '#334155';
+    }
+    if (badgeReject) {
+      badgeReject.style.background = 'rgba(255,255,255,0.25)';
+      badgeReject.style.color = '#fff';
+    }
+    if (inputEl) inputEl.placeholder = 'Type new reject reason (e.g. Tape Seal Damaged)...';
+  }
+
+  renderReasonsList();
+}
+
+function renderReasonsList() {
+  const container = document.getElementById('sys-reasons-list');
+  const countHoldBadge = document.getElementById('badge-hold-reasons-count');
+  const countRejectBadge = document.getElementById('badge-reject-reasons-count');
+
+  if (countHoldBadge) countHoldBadge.textContent = _currentAuditReasons.holdReasons.length;
+  if (countRejectBadge) countRejectBadge.textContent = _currentAuditReasons.rejectionReasons.length;
+
+  if (!container) return;
+
+  const currentList = _activeReasonsCategory === 'hold' 
+    ? _currentAuditReasons.holdReasons 
+    : _currentAuditReasons.rejectionReasons;
+
+  if (!currentList || currentList.length === 0) {
+    container.innerHTML = `
+      <div style="text-align: center; padding: 18px 10px; color: #94a3b8; font-size: 11px;">
+        <i class="ri-inbox-line" style="font-size: 18px; display: block; margin-bottom: 4px;"></i>
+        No ${_activeReasonsCategory === 'hold' ? 'Hold' : 'Rejection'} reasons configured. Add one above.
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = currentList.map((reason, idx) => `
+    <div class="audit-reason-item" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: #ffffff; border: 1px solid var(--border-light); border-radius: var(--border-radius-sm); margin-bottom: 4px;">
+      <div style="display: flex; align-items: center; gap: 8px; overflow: hidden;">
+        <i class="${_activeReasonsCategory === 'hold' ? 'ri-pause-circle-line text-warning' : 'ri-close-circle-line text-danger'}" style="font-size: 13px; flex-shrink: 0;"></i>
+        <span style="font-size: 11.5px; font-weight: 600; color: var(--text-heading); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${reason}</span>
+      </div>
+      <button class="hud-icon-btn text-danger" onclick="deleteAuditReason(${idx})" title="Delete reason '${reason}'" style="padding: 2px 6px;">
+        <i class="ri-delete-bin-line" style="font-size: 13px;"></i>
+      </button>
+    </div>
+  `).join('');
+}
+
+async function addNewAuditReason() {
+  const inputEl = document.getElementById('sys-new-reason-input');
+  const val = inputEl ? inputEl.value.trim() : '';
+  if (!val) return;
+
+  const currentList = _activeReasonsCategory === 'hold' 
+    ? _currentAuditReasons.holdReasons 
+    : _currentAuditReasons.rejectionReasons;
+
+  // Case-insensitive duplicate check
+  if (currentList.some(r => r.toLowerCase() === val.toLowerCase())) {
+    await customModal.alert(`The reason "${val}" already exists in the ${_activeReasonsCategory === 'hold' ? 'Hold' : 'Rejection'} list.`, {
+      title: 'DUPLICATE REASON',
+      type: 'warning'
+    });
+    return;
+  }
+
+  currentList.push(val);
+
+  try {
+    const res = await api.saveAuditReasons(_currentAuditReasons);
+    sounds.playSuccess();
+    if (inputEl) inputEl.value = '';
+    renderReasonsList();
+    populateModalReasonDropdowns();
+
+    const statusMsg = document.getElementById('sys-reasons-status-msg');
+    if (statusMsg) {
+      statusMsg.textContent = `Added "${val}" to ${_activeReasonsCategory.toUpperCase()} options!`;
+      statusMsg.style.color = '#059669';
+      setTimeout(() => {
+        statusMsg.textContent = 'Options populate Hold/Reject modal dropdowns';
+        statusMsg.style.color = '#64748b';
+      }, 2500);
+    }
+  } catch (err) {
+    currentList.pop();
+    sounds.playViolation();
+    await customModal.alert('Failed to save reason: ' + err.message, { title: 'SAVE ERROR', type: 'danger' });
+  }
+}
+
+async function deleteAuditReason(index) {
+  const currentList = _activeReasonsCategory === 'hold' 
+    ? _currentAuditReasons.holdReasons 
+    : _currentAuditReasons.rejectionReasons;
+
+  const reasonToDelete = currentList[index];
+  if (!reasonToDelete) return;
+
+  const confirmed = await customModal.confirm(`Remove reason option "${reasonToDelete}"?`, {
+    title: `DELETE ${_activeReasonsCategory.toUpperCase()} REASON`,
+    danger: true
+  });
+  if (!confirmed) return;
+
+  currentList.splice(index, 1);
+
+  try {
+    await api.saveAuditReasons(_currentAuditReasons);
+    sounds.playSuccess();
+    renderReasonsList();
+    populateModalReasonDropdowns();
+
+    const statusMsg = document.getElementById('sys-reasons-status-msg');
+    if (statusMsg) {
+      statusMsg.textContent = `Removed "${reasonToDelete}"`;
+      statusMsg.style.color = '#059669';
+      setTimeout(() => {
+        statusMsg.textContent = 'Options populate Hold/Reject modal dropdowns';
+        statusMsg.style.color = '#64748b';
+      }, 2500);
+    }
+  } catch (err) {
+    sounds.playViolation();
+    await customModal.alert('Failed to delete reason: ' + err.message, { title: 'DELETE ERROR', type: 'danger' });
+    loadAuditReasons();
+  }
+}
+
+async function resetReasonsToDefaults() {
+  const confirmed = await customModal.confirm('Reset both Hold and Reject reason dropdowns back to factory defaults?', {
+    title: 'RESET AUDIT REASONS',
+    danger: true
+  });
+  if (!confirmed) return;
+
+  _currentAuditReasons.holdReasons = [
+    'Visual Quality Inspection',
+    'Packaging / Label Defect',
+    'Lab Testing Pending',
+    'Dimensional Tolerance Check',
+    'Supervisor Discretion'
+  ];
+  _currentAuditReasons.rejectionReasons = [
+    'Damaged QR / Barcode Sticker',
+    'Defective Part Inside Box',
+    'Box Packaging Crushed',
+    'Quantity Mismatch',
+    'Laser Marking Illegible',
+    'Tape Seal Damaged'
+  ];
+
+  try {
+    await api.saveAuditReasons(_currentAuditReasons);
+    sounds.playSuccess();
+    renderReasonsList();
+    populateModalReasonDropdowns();
+
+    const statusMsg = document.getElementById('sys-reasons-status-msg');
+    if (statusMsg) {
+      statusMsg.textContent = 'Restored factory default options!';
+      statusMsg.style.color = '#059669';
+      setTimeout(() => {
+        statusMsg.textContent = 'Options populate Hold/Reject modal dropdowns';
+        statusMsg.style.color = '#64748b';
+      }, 2500);
+    }
+  } catch (err) {
+    sounds.playViolation();
+    await customModal.alert('Failed to reset reasons: ' + err.message, { title: 'RESET ERROR', type: 'danger' });
+  }
+}
+
+function populateModalReasonDropdowns() {
+  const holdSelect = document.getElementById('modal-hold-reason');
+  if (holdSelect && _currentAuditReasons.holdReasons) {
+    const curVal = holdSelect.value;
+    const defaultPlaceholder = '<option value="" disabled selected>-- Select a Hold Reason --</option>';
+    const optionsHtml = _currentAuditReasons.holdReasons.map(r => `<option value="${r}">${r}</option>`).join('');
+    holdSelect.innerHTML = defaultPlaceholder + optionsHtml;
+    if (curVal && _currentAuditReasons.holdReasons.includes(curVal)) {
+      holdSelect.value = curVal;
+    } else {
+      holdSelect.value = '';
+    }
+    if (window.scadaDropdown) window.scadaDropdown.attach(holdSelect).sync();
+  }
+
+  const rejectSelect = document.getElementById('modal-reject-reason');
+  if (rejectSelect && _currentAuditReasons.rejectionReasons) {
+    const curVal = rejectSelect.value;
+    const defaultPlaceholder = '<option value="" disabled selected>-- Select a Rejection Reason --</option>';
+    const optionsHtml = _currentAuditReasons.rejectionReasons.map(r => `<option value="${r}">${r}</option>`).join('');
+    rejectSelect.innerHTML = defaultPlaceholder + optionsHtml;
+    if (curVal && _currentAuditReasons.rejectionReasons.includes(curVal)) {
+      rejectSelect.value = curVal;
+    } else {
+      rejectSelect.value = '';
+    }
+    if (window.scadaDropdown) window.scadaDropdown.attach(rejectSelect).sync();
+  }
+}
+
+// Expose reasons functions globally on window
+window.switchReasonsCategory = switchReasonsCategory;
+window.addNewAuditReason = addNewAuditReason;
+window.deleteAuditReason = deleteAuditReason;
+window.resetReasonsToDefaults = resetReasonsToDefaults;
+window.populateModalReasonDropdowns = populateModalReasonDropdowns;
+window.loadAuditReasons = loadAuditReasons;
 
 // ============================================================================
 // TITLEBAR OPERATOR DROPDOWN & ACTIONS
@@ -1652,3 +3594,32 @@ document.addEventListener('click', (e) => {
     dd.classList.remove('active');
   }
 });
+
+// Expose inventory, modal & reports functions globally on window
+window.setInventoryStatusFilter = setInventoryStatusFilter;
+window.executeInventorySearch = executeInventorySearch;
+window.resetInventoryFilters = resetInventoryFilters;
+window.changeInventoryPage = changeInventoryPage;
+window.applyInventoryFilter = applyInventoryFilter;
+window.loadInventoryView = loadInventoryView;
+window.openHoldModal = openHoldModal;
+window.submitHoldModal = submitHoldModal;
+window.quickReleaseHold = quickReleaseHold;
+window.openRejectModal = openRejectModal;
+window.submitRejectModal = submitRejectModal;
+window.openReopenModal = openReopenModal;
+window.submitReopenModal = submitReopenModal;
+window.openModal = openModal;
+window.closeModals = closeModals;
+
+window.loadReportsView = loadReportsView;
+window.applyReportsFilter = applyReportsFilter;
+window.resetReportsFilter = resetReportsFilter;
+window.changeReportsPage = changeReportsPage;
+window.openReleaseModal = openReleaseModal;
+window.submitReleaseModal = submitReleaseModal;
+window.handleCancelDispatch = handleCancelDispatch;
+window.submitCancelDispatchModal = submitCancelDispatchModal;
+window.exportCsvReport = exportCsvReport;
+window.openDispatchBill = openDispatchBill;
+window.toggleUserDropdown = toggleUserDropdown;

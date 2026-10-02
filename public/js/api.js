@@ -200,6 +200,11 @@ const api = {
     return this.request('/api/reports/monthly');
   },
 
+  async getFilteredReports(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.request(`/api/reports/monthly${qs ? `?${qs}` : ''}`);
+  },
+
   async getDispatchHistory(params = {}) {
     const qs = new URLSearchParams(params).toString();
     return this.request(`/api/reports/history?${qs}`);
@@ -241,12 +246,7 @@ const api = {
     });
   },
 
-  async testScan(qrData) {
-    return this.request('/api/system/test-scan', {
-      method: 'POST',
-      body: JSON.stringify({ qrData })
-    });
-  },
+
 
   async getUsers() {
     return this.request('/api/system/users');
@@ -263,6 +263,19 @@ const api = {
     return this.request(`/api/system/users/${userId}/reset-password`, {
       method: 'POST',
       body: JSON.stringify({ newPassword })
+    });
+  },
+
+  async updateUser(userId, data) {
+    return this.request(`/api/system/users/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  },
+
+  async toggleUserActive(userId) {
+    return this.request(`/api/system/users/${userId}/toggle-active`, {
+      method: 'PATCH'
     });
   },
 
@@ -283,10 +296,14 @@ const api = {
     });
   },
 
-  async seedDummyData(force = true) {
-    return this.request('/api/system/seed-dummy-data', {
+  async getAuditReasons() {
+    return this.request('/api/system/reasons');
+  },
+
+  async saveAuditReasons(data) {
+    return this.request('/api/system/reasons', {
       method: 'POST',
-      body: JSON.stringify({ force })
+      body: JSON.stringify(data)
     });
   }
 };

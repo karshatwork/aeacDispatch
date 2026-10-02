@@ -13,10 +13,16 @@ const syncService = require('../services/syncService');
 const scannerService = require('../services/scannerService');
 
 // GET /api/system/health - Public health check for DB & scanner status (no auth required)
-router.get('/health', (req, res) => {
+router.get('/health', async (req, res) => {
     const dbStatus = getStatus();
     const scannerStatus = scannerService.getStatus();
     const machineCode = getMachineFingerprint();
+    let syncState = null;
+    if (dbStatus && dbStatus.isConnected) {
+        try {
+            syncState = await SyncState.findOne({ key: 'global_sync' });
+        } catch (e) { }
+    }
     const licenseCandidates = [
         path.join(process.cwd(), 'license.key'),
         path.join(__dirname, '../../license.key'),
@@ -32,6 +38,11 @@ router.get('/health', (req, res) => {
     res.json({
         success: true,
         database: dbStatus,
+        sync: {
+            watermark: syncState ? syncState.lastSyncedClosedAt : null,
+            lastRun: syncState ? syncState.lastSyncRunAt : null,
+            totalSyncedBoxes: syncState ? syncState.totalSyncedBoxes : 0
+        },
         scanner: scannerStatus,
         license,
         serverTime: new Date()
@@ -40,10 +51,16 @@ router.get('/health', (req, res) => {
 
 // GET /api/system/status - Overview of system health, DB connection, and sync state
 router.get('/status', authenticate, async (req, res) => {
-
     try {
         const dbStatus = getStatus();
-        const syncState = await SyncState.findOne({ key: 'global_sync' });
+        let syncState = null;
+        if (dbStatus.isConnected) {
+            try {
+                syncState = await SyncState.findOne({ key: 'global_sync' });
+            } catch (e) {
+                // Ignore sync state query error if DB is unstable
+            }
+        }
         const scannerStatus = scannerService.getStatus();
 
         res.json({
@@ -89,13 +106,6 @@ router.post('/db-config', authenticate, requireRole('admin'), async (req, res) =
             return res.status(400).json({ success: false, error: `Connection test failed: ${testRes.message}` });
         }
 
-        // Save in SystemSettings
-        await SystemSettings.findOneAndUpdate(
-            { key: 'global_settings' },
-            { $set: { mongoUri } },
-            { upsert: true }
-        );
-
         // Update encrypted config.enc and .env if present
         try {
             updateConfigValue('MONGO_URI', mongoUri);
@@ -116,6 +126,27 @@ router.post('/db-config', authenticate, requireRole('admin'), async (req, res) =
 
         // Reconnect Mongoose
         await connectDB(mongoUri);
+
+        // Save in SystemSettings now that connection is active
+        try {
+            await SystemSettings.findOneAndUpdate(
+                { key: 'global_settings' },
+                { $set: { mongoUri } },
+                { upsert: true }
+            );
+        } catch (settingsErr) {
+            console.warn('[DB RECONNECT] Could not persist settings to collection:', settingsErr.message);
+        }
+
+        // Initialize admin account and sync worker for newly connected database
+        try {
+            const { autoSeedAdmin } = require('../services/authService');
+            const { startSyncWorker } = require('../services/syncService');
+            await autoSeedAdmin();
+            startSyncWorker(parseInt(process.env.SYNC_INTERVAL_MS || '300000', 10));
+        } catch (initErr) {
+            console.warn('[DB RECONNECT] Post-connect service init warning:', initErr.message);
+        }
 
         res.json({
             success: true,
@@ -151,39 +182,81 @@ router.post('/com-config', authenticate, requireRole('admin'), async (req, res) 
             rtscts: !!rtscts
         };
         
-        scannerService.connect(configOptions);
+        const connResult = await scannerService.connect(configOptions);
 
-        await SystemSettings.findOneAndUpdate(
-            { key: 'global_settings' },
-            { $set: { comPort: port, comBaudRate: configOptions.baudRate, comDataBits: configOptions.dataBits, comStopBits: configOptions.stopBits, comParity: configOptions.parity, comDelimiter: configOptions.delimiter } },
-            { upsert: true }
-        );
+        if (getStatus().isConnected) {
+            try {
+                await SystemSettings.findOneAndUpdate(
+                    { key: 'global_settings' },
+                    { $set: { comPort: port, comBaudRate: configOptions.baudRate, comDataBits: configOptions.dataBits, comStopBits: configOptions.stopBits, comParity: configOptions.parity, comDelimiter: configOptions.delimiter } },
+                    { upsert: true }
+                );
+            } catch (e) {
+                console.warn('[COM CONFIG] Could not persist settings to collection:', e.message);
+            }
+        }
 
         try {
             updateConfigValue('COM_PORT', port);
             updateConfigValue('COM_BAUD_RATE', configOptions.baudRate);
-        } catch (e) {}
+            updateConfigValue('COM_DATA_BITS', configOptions.dataBits);
+            updateConfigValue('COM_PARITY', configOptions.parity);
+            updateConfigValue('COM_STOP_BITS', configOptions.stopBits);
+            updateConfigValue('COM_DELIMITER', delimiter || 'CRLF');
 
-        res.json({
-            success: true,
-            message: `Scanner reconfigured to ${port} [${configOptions.baudRate}-${configOptions.dataBits}-${configOptions.parity.toUpperCase()[0]}-${configOptions.stopBits}]. Connecting...`
-        });
+            const envPath = path.join(process.cwd(), '.env');
+            if (fs.existsSync(envPath)) {
+                let envText = fs.readFileSync(envPath, 'utf8');
+                const updates = {
+                    COM_PORT: port,
+                    COM_BAUD_RATE: configOptions.baudRate,
+                    COM_DATA_BITS: configOptions.dataBits,
+                    COM_PARITY: configOptions.parity,
+                    COM_STOP_BITS: configOptions.stopBits,
+                    COM_DELIMITER: delimiter || 'CRLF'
+                };
+                for (const [k, v] of Object.entries(updates)) {
+                    const regex = new RegExp(`^${k}=.*$`, 'm');
+                    if (regex.test(envText)) {
+                        envText = envText.replace(regex, `${k}=${v}`);
+                    } else {
+                        envText += `\n${k}=${v}`;
+                    }
+                }
+                fs.writeFileSync(envPath, envText.trim() + '\n', 'utf8');
+            }
+        } catch (e) {
+            console.warn('[COM CONFIG] Could not persist to config.enc/.env:', e.message);
+        }
+
+        if (connResult && connResult.isConnected) {
+            res.json({
+                success: true,
+                isConnected: true,
+                message: `Scanner successfully connected on ${port} [${configOptions.baudRate}-${configOptions.dataBits}-${configOptions.parity.toUpperCase()[0]}-${configOptions.stopBits}].`
+            });
+        } else {
+            const errDetail = (connResult && connResult.error) ? connResult.error : 'Port hardware unavailable';
+            res.status(400).json({
+                success: false,
+                isConnected: false,
+                error: `Failed to open ${port}: ${errDetail}`,
+                message: `Failed to open ${port}: ${errDetail}`
+            });
+        }
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        res.status(500).json({ success: false, isConnected: false, error: err.message, message: err.message });
     }
 });
 
-// POST /api/system/test-scan - Test wedge simulation
-router.post('/test-scan', authenticate, (req, res) => {
-    const { qrData } = req.body;
-    if (!qrData) return res.status(400).json({ success: false, error: 'QR data required' });
-    scannerService.simulateScan(qrData);
-    res.json({ success: true, message: `Simulated scan emitted: ${qrData}` });
-});
 
-// GET /api/system/users - List users
-router.get('/users', authenticate, requireRole('manager'), async (req, res) => {
+
+// GET /api/system/users - List users (Admin only)
+router.get('/users', authenticate, requireRole('admin'), async (req, res) => {
     try {
+        if (!getStatus().isConnected) {
+            return res.json({ success: true, users: [] });
+        }
         const users = await DispatchUser.find().select('-passwordHash').sort({ createdAt: -1 });
         res.json({ success: true, users });
     } catch (err) {
@@ -191,8 +264,8 @@ router.get('/users', authenticate, requireRole('manager'), async (req, res) => {
     }
 });
 
-// POST /api/system/users - Create user (Hard limit: 10 max)
-router.post('/users', authenticate, requireRole('manager'), async (req, res) => {
+// POST /api/system/users - Create user (Admin only, hard limit: 10 max)
+router.post('/users', authenticate, requireRole('admin'), async (req, res) => {
     try {
         const totalUsers = await DispatchUser.countDocuments();
         if (totalUsers >= 10) {
@@ -210,13 +283,106 @@ router.post('/users', authenticate, requireRole('manager'), async (req, res) => 
     }
 });
 
-// DELETE /api/system/users/:id - Delete an operator account (Admin only)
+// PUT /api/system/users/:id - Edit an account (Admin only)
+router.put('/users/:id', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { fullName, role, active } = req.body;
+        const user = await DispatchUser.findById(req.params.id);
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+        const isSelf = req.user && (
+            (req.user.id && req.user.id.toString() === req.params.id) ||
+            (req.user._id && req.user._id.toString() === req.params.id)
+        );
+
+        if (isSelf) {
+            if (role && role !== 'admin') {
+                return res.status(400).json({ success: false, error: 'Cannot demote your own Administrator account.' });
+            }
+            if (active === false) {
+                return res.status(400).json({ success: false, error: 'Cannot deactivate your own active Administrator account.' });
+            }
+        }
+
+        if (user.role === 'admin' && (role && role !== 'admin' || active === false)) {
+            const adminCount = await DispatchUser.countDocuments({ role: 'admin', active: true });
+            if (adminCount <= 1) {
+                return res.status(400).json({ success: false, error: 'Cannot demote or deactivate the sole active Administrator account on the terminal.' });
+            }
+        }
+
+        if (fullName !== undefined && fullName.trim()) user.fullName = fullName.trim();
+        if (role !== undefined && ['operator', 'supervisor', 'manager', 'admin'].includes(role.toLowerCase())) {
+            user.role = role.toLowerCase();
+        }
+        if (active !== undefined) {
+            user.active = Boolean(active);
+        }
+
+        await user.save();
+        res.json({
+            success: true,
+            message: `User '${user.username}' successfully updated.`,
+            user: {
+                id: user._id,
+                username: user.username,
+                fullName: user.fullName,
+                role: user.role,
+                active: user.active
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// PATCH /api/system/users/:id/toggle-active - Toggle user active status (Admin only)
+router.patch('/users/:id/toggle-active', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const user = await DispatchUser.findById(req.params.id);
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+        const isSelf = req.user && (
+            (req.user.id && req.user.id.toString() === req.params.id) ||
+            (req.user._id && req.user._id.toString() === req.params.id)
+        );
+
+        if (isSelf && user.active) {
+            return res.status(400).json({ success: false, error: 'Cannot deactivate your own active Administrator account.' });
+        }
+
+        if (user.role === 'admin' && user.active) {
+            const adminCount = await DispatchUser.countDocuments({ role: 'admin', active: true });
+            if (adminCount <= 1) {
+                return res.status(400).json({ success: false, error: 'Cannot deactivate the sole active Administrator account on the terminal.' });
+            }
+        }
+
+        user.active = !user.active;
+        await user.save();
+
+        res.json({
+            success: true,
+            active: user.active,
+            message: user.active ? `User '${user.username}' activated.` : `User '${user.username}' deactivated.`
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// DELETE /api/system/users/:id - Delete an account (Admin only)
 router.delete('/users/:id', authenticate, requireRole('admin'), async (req, res) => {
     try {
         const user = await DispatchUser.findById(req.params.id);
         if (!user) return res.status(404).json({ success: false, error: 'User not found' });
 
-        if (req.user && req.user._id && req.user._id.toString() === req.params.id) {
+        const isSelf = req.user && (
+            (req.user.id && req.user.id.toString() === req.params.id) ||
+            (req.user._id && req.user._id.toString() === req.params.id)
+        );
+
+        if (isSelf) {
             return res.status(400).json({ success: false, error: 'Cannot delete your own active administrator account.' });
         }
 
@@ -234,12 +400,12 @@ router.delete('/users/:id', authenticate, requireRole('admin'), async (req, res)
     }
 });
 
-// POST /api/system/users/:id/reset-password - Reset user password
+// POST /api/system/users/:id/reset-password - Reset user password (Admin only)
 router.post('/users/:id/reset-password', authenticate, requireRole('admin'), async (req, res) => {
     try {
         const { newPassword } = req.body;
         if (!newPassword || newPassword.length < 6) {
-            return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
+            return res.status(400).json({ success: false, error: 'Password must be at least 6 characters long' });
         }
 
         const user = await DispatchUser.findById(req.params.id);
@@ -247,7 +413,7 @@ router.post('/users/:id/reset-password', authenticate, requireRole('admin'), asy
 
         const salt = await bcrypt.genSalt(10);
         user.passwordHash = await bcrypt.hash(newPassword, salt);
-        user.mustChangePassword = true;
+        user.mustChangePassword = false;
         await user.save();
 
         res.json({ success: true, message: `Password reset successfully for ${user.username}` });
@@ -309,21 +475,78 @@ router.post('/license', authenticate, requireRole('admin'), (req, res) => {
     }
 });
 
-// POST /api/system/seed-dummy-data - Seed rich dummy dataset (available, hold, rejected, historical dispatches)
-router.post('/seed-dummy-data', authenticate, async (req, res) => {
+const DEFAULT_HOLD_REASONS = [
+    'Visual Quality Inspection',
+    'Packaging / Label Defect',
+    'Lab Testing Pending',
+    'Dimensional Tolerance Check',
+    'Supervisor Discretion'
+];
+
+const DEFAULT_REJECT_REASONS = [
+    'Damaged QR / Barcode Sticker',
+    'Defective Part Inside Box',
+    'Box Packaging Crushed',
+    'Quantity Mismatch',
+    'Laser Marking Illegible',
+    'Tape Seal Damaged'
+];
+
+// GET /api/system/reasons - Retrieve quality hold and rejection reason lists
+router.get('/reasons', authenticate, async (req, res) => {
     try {
-        const mongoose = require('mongoose');
-        const dummyDataSeeder = require('../utils/dummyDataSeeder');
-        const db = mongoose.connection.db;
-        if (!db) {
-            return res.status(503).json({ success: false, error: 'Database is not connected' });
+        let settings = await SystemSettings.findOne({ key: 'global_settings' });
+        if (!settings) {
+            settings = await SystemSettings.create({
+                key: 'global_settings',
+                holdReasons: DEFAULT_HOLD_REASONS,
+                rejectionReasons: DEFAULT_REJECT_REASONS
+            });
         }
-        const force = req.body.force !== false; // default true so user can easily reload full dataset
-        const result = await dummyDataSeeder.seedAll(db, { force });
+
+        const holdReasons = (settings.holdReasons && settings.holdReasons.length > 0)
+            ? settings.holdReasons
+            : DEFAULT_HOLD_REASONS;
+
+        const rejectionReasons = (settings.rejectionReasons && settings.rejectionReasons.length > 0)
+            ? settings.rejectionReasons
+            : DEFAULT_REJECT_REASONS;
+
         res.json({
             success: true,
-            message: `Successfully seeded ${result.modelsCount} models, ${result.boxesCount} boxes (${result.availableCount} available, ${result.holdCount} on hold, ${result.rejectedCount} rejected, ${result.dispatchedCount} dispatched), and ${result.transactionsCount} historical transactions.`,
-            stats: result
+            holdReasons,
+            rejectionReasons
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// POST /api/system/reasons - Update hold or rejection reasons
+router.post('/reasons', authenticate, requireRole('supervisor'), async (req, res) => {
+    try {
+        const { holdReasons, rejectionReasons } = req.body;
+
+        let settings = await SystemSettings.findOne({ key: 'global_settings' });
+        if (!settings) {
+            settings = new SystemSettings({ key: 'global_settings' });
+        }
+
+        if (Array.isArray(holdReasons)) {
+            settings.holdReasons = holdReasons.map(r => String(r).trim()).filter(Boolean);
+        }
+
+        if (Array.isArray(rejectionReasons)) {
+            settings.rejectionReasons = rejectionReasons.map(r => String(r).trim()).filter(Boolean);
+        }
+
+        await settings.save();
+
+        res.json({
+            success: true,
+            message: 'Quality audit reasons successfully updated',
+            holdReasons: settings.holdReasons,
+            rejectionReasons: settings.rejectionReasons
         });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });

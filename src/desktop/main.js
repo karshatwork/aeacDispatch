@@ -109,7 +109,7 @@ function createMainWindow() {
     frame: false,
     show: false,
     autoHideMenuBar: false,
-    title: 'RecordKeeper Dispatch - Dispatch Management System',
+    title: 'RecordKeeper Dispatch',
     icon: fs.existsSync(appIconPath) ? appIconPath : undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

@@ -10,7 +10,10 @@
     "electron:dev": "electron .",
     "test": "jest --runInBand --detectOpenHandles --forceExit",
     "release": "node scripts/build-release.js",
-    "license:gen": "node scripts/generate-license.js"
+    "license:gen": "node scripts/generate-license.js",
+    "seed:production": "node scripts/seed-production-data.js",
+    "simulate:batch": "node scripts/simulate-new-batch.js",
+    "config": "node scripts/edit-config.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

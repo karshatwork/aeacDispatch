@@ -78,11 +78,19 @@ describe('Encrypted Configuration Engine (AES-256-GCM)', () => {
     });
 
     test('should update config value dynamically in encrypted store', () => {
-        const encFilePath = path.join(tempDir, 'dynamic.enc');
+        const origEnvUri = process.env.MONGO_URI;
+        const encFilePath = path.join(tempDir, 'config.enc');
         saveEncryptedConfig(encFilePath, { MONGO_URI: 'mongodb://localhost:27017' });
 
-        const updated = updateConfigValue('MONGO_URI', 'mongodb://srv-prod:27017', tempDir);
-        expect(updated.MONGO_URI).toBe('mongodb://srv-prod:27017');
-        expect(process.env.MONGO_URI).toBe('mongodb://srv-prod:27017');
+        const updated = updateConfigValue('MONGO_URI', 'mongodb://isolated-test-db:27017', tempDir);
+        expect(updated.MONGO_URI).toBe('mongodb://isolated-test-db:27017');
+        expect(loadEncryptedConfig(encFilePath).MONGO_URI).toBe('mongodb://isolated-test-db:27017');
+
+        // Restore original env variable
+        if (origEnvUri !== undefined) {
+            process.env.MONGO_URI = origEnvUri;
+        } else {
+            delete process.env.MONGO_URI;
+        }
     });
 });

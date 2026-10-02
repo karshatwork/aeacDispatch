@@ -8,7 +8,28 @@ const systemSettingsSchema = new mongoose.Schema({
     comBaudRate: { type: Number, default: 9600 },
     companyName: { type: String, default: 'Elektrosil' },
     customerName: { type: String, default: 'Mahindra' },
-    syncIntervalMs: { type: Number, default: 3000 }
+    syncIntervalMs: { type: Number, default: 3000 },
+    holdReasons: {
+        type: [String],
+        default: [
+            'Visual Quality Inspection',
+            'Packaging / Label Defect',
+            'Lab Testing Pending',
+            'Dimensional Tolerance Check',
+            'Supervisor Discretion'
+        ]
+    },
+    rejectionReasons: {
+        type: [String],
+        default: [
+            'Damaged QR / Barcode Sticker',
+            'Defective Part Inside Box',
+            'Box Packaging Crushed',
+            'Quantity Mismatch',
+            'Laser Marking Illegible',
+            'Tape Seal Damaged'
+        ]
+    }
 }, {
     timestamps: true,
     collection: 'dispatch_settings'

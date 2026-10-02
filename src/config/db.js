@@ -1,44 +1,29 @@
 // src/config/db.js - High-Reliability Database Connection Manager
 const mongoose = require('mongoose');
-const dummyDataSeeder = require('../utils/dummyDataSeeder');
 
 let isConnected = false;
-let memoryServer = null;
 let lastDbError = null;
 let configuredUri = null;
 
-/**
- * Seed realistic development data if using in-memory database
- */
-async function seedDevData(conn, force = false) {
-    try {
-        const db = conn.db || (conn.connection && conn.connection.db) || mongoose.connection.db;
-        if (!db) {
-            console.warn('[DEV SEED] Database handle not available yet.');
-            return;
-        }
-        await dummyDataSeeder.seedAll(db, { force });
-    } catch (err) {
-        console.warn(`[DEV SEED WARNING] Could not seed dev data: ${err.message}`);
-    }
-}
-
 async function connectDB(customUri = null) {
-    const mongoUri = customUri || process.env.MONGO_URI || 'mongodb://localhost:27017/plc_sticker';
+    const mongoUri = customUri || process.env.MONGO_URI || 'mongodb://localhost:27017/dispatch_db';
     configuredUri = mongoUri;
-    
+
     try {
-        if (mongoose.connection.readyState === 1) {
+        if (customUri && mongoose.connection.readyState !== 0) {
+            console.log('[DATABASE] Disconnecting existing connection before reconnecting...');
+            await mongoose.disconnect();
+        } else if (mongoose.connection.readyState === 1) {
             isConnected = true;
             lastDbError = null;
             return mongoose.connection;
         }
 
         mongoose.set('strictQuery', false);
-        
-        console.log(`[DATABASE] Attempting connection to: ${mongoUri}...`);
+
+        console.log(`[DATABASE] Attempting connection to: ${mongoUri.replace(/:([^:@]+)@/, ':****@')}...`);
         const conn = await mongoose.connect(mongoUri, {
-            serverSelectionTimeoutMS: 2000,
+            serverSelectionTimeoutMS: 3000,
             socketTimeoutMS: 45000
         });
 
@@ -49,41 +34,8 @@ async function connectDB(customUri = null) {
     } catch (error) {
         isConnected = false;
         lastDbError = error.message;
-        const isProduction = process.env.NODE_ENV === 'production';
-
-        if (isProduction) {
-            console.error(`\n[DATABASE ERROR] Production MongoDB unreachable at: ${mongoUri}`);
-            console.error(`[DATABASE ERROR] Error: ${error.message}`);
-            console.warn('[DATABASE WARNING] Embedded in-memory database fallback is strictly disabled in production.');
-            console.warn('[DATABASE WARNING] Starting server in safe mode. Reconfigure database parameters via UI System Settings.');
-            throw error;
-        }
-
-        console.warn(`\n[DATABASE NOTICE] Could not connect to local/configured MongoDB (${mongoUri}): ${error.message}`);
-        console.log('[DATABASE] Starting embedded in-memory database (mongodb-memory-server) for development...');
-        
-        try {
-            const { MongoMemoryServer } = require('mongodb-memory-server');
-            if (!memoryServer) {
-                memoryServer = await MongoMemoryServer.create();
-            }
-            const inMemoryUri = memoryServer.getUri();
-            console.log(`[DATABASE] Embedded MongoDB active at: ${inMemoryUri}`);
-
-            const conn = await mongoose.connect(inMemoryUri);
-            isConnected = true;
-            lastDbError = null;
-
-            // Seed rich demo models, batches, boxes, and historical transactions
-            await seedDevData(conn.connection, false);
-
-            return conn.connection;
-        } catch (memErr) {
-            isConnected = false;
-            lastDbError = memErr.message;
-            console.error(`[DATABASE ERROR] Failed to initialize embedded MongoDB: ${memErr.message}`);
-            throw memErr;
-        }
+        console.error(`[DATABASE ERROR] Could not connect to MongoDB: ${error.message}`);
+        throw error;
     }
 }
 
@@ -97,28 +49,14 @@ async function testConnection(testUri) {
         const collections = await tempConn.db.listCollections().toArray();
         const colNames = collections.map(c => c.name);
 
-        let modelCount = 0;
-        let batchCount = 0;
-        let closedBatchCount = 0;
-
-        if (colNames.includes('productmodels')) {
-            modelCount = await tempConn.collection('productmodels').countDocuments();
-        }
-        if (colNames.includes('batches')) {
-            batchCount = await tempConn.collection('batches').countDocuments();
-            closedBatchCount = await tempConn.collection('batches').countDocuments({ status: 'closed' });
-        }
-
+        const dbName = tempConn.name || 'unnamed';
         await tempConn.close();
 
         return {
             success: true,
-            databaseName: tempConn.name,
+            databaseName: dbName,
             collections: colNames,
-            modelCount,
-            batchCount,
-            closedBatchCount,
-            message: `Connected successfully! Found ${modelCount} product models and ${closedBatchCount} closed batches ready for dispatch.`
+            message: `Connected successfully to database "${dbName}"! (${colNames.length} collections detected)`
         };
     } catch (err) {
         return {
@@ -129,21 +67,20 @@ async function testConnection(testUri) {
 }
 
 function getStatus() {
+    const ready = mongoose.connection.readyState === 1;
     return {
-        isConnected: mongoose.connection.readyState === 1,
+        isConnected: ready,
         readyState: mongoose.connection.readyState,
-        host: mongoose.connection.host || (memoryServer ? 'in-memory-embedded' : null),
-        name: mongoose.connection.name || null,
-        isEmbedded: !!memoryServer,
-        configuredUri: configuredUri || process.env.MONGO_URI || null,
-        lastError: lastDbError,
-        isProduction: process.env.NODE_ENV === 'production'
+        host: ready ? mongoose.connection.host : null,
+        port: ready ? (mongoose.connection.port || 27017) : null,
+        name: ready ? mongoose.connection.name : null,
+        isConfigured: !!(configuredUri || process.env.MONGO_URI),
+        lastError: lastDbError
     };
 }
 
 module.exports = {
     connectDB,
     testConnection,
-    getStatus,
-    seedDevData
+    getStatus
 };

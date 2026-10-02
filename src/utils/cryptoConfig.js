@@ -74,8 +74,12 @@ function loadEncryptedConfig(filePath) {
 }
 
 function findConfigFile(fileName, customDir) {
+    if (customDir) {
+        const fullPath = path.join(customDir, fileName);
+        return fs.existsSync(fullPath) ? fullPath : null;
+    }
+
     const candidateDirs = [
-        customDir,
         process.resourcesPath ? path.dirname(process.resourcesPath) : null,
         process.cwd(),
         __dirname,
