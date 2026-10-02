@@ -12,8 +12,10 @@
     "release": "node scripts/build-release.js",
     "license:gen": "node scripts/generate-license.js",
     "seed:production": "node scripts/seed-production-data.js",
+    "seed:batches": "node scripts/seed-batches.js",
     "simulate:batch": "node scripts/simulate-new-batch.js",
-    "config": "node scripts/edit-config.js"
+    "config": "node scripts/edit-config.js",
+    "scanner": "node scripts/com-scanner-emulator.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

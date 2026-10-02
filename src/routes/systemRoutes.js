@@ -249,7 +249,19 @@ router.post('/com-config', authenticate, requireRole('admin'), async (req, res) 
     }
 });
 
-
+// POST /api/system/simulate-scan - Trigger simulated barcode scan event
+router.post('/simulate-scan', (req, res) => {
+    try {
+        const qrData = req.body.qrData || req.body.scannedPayload || req.body.payload;
+        if (!qrData) {
+            return res.status(400).json({ success: false, error: 'qrData is required' });
+        }
+        scannerService.simulateScan(qrData);
+        res.json({ success: true, message: `Simulated scan fired: ${qrData}` });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 // GET /api/system/users - List users (Admin only)
 router.get('/users', authenticate, requireRole('admin'), async (req, res) => {

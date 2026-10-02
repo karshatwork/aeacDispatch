@@ -340,6 +340,50 @@ ipcMain.on('window-close', () => {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
 });
 
+/**
+ * print-to-pdf: renders an HTML string in a hidden window and exports as PDF
+ * Returns the saved file path on success, throws on failure.
+ */
+ipcMain.handle('print-to-pdf', async (_event, { html, filename }) => {
+  const os = require('os');
+  const outPath = path.join(os.tmpdir(), filename || `dispatch-manifest-${Date.now()}.pdf`);
+
+  // Write HTML to a temp file so we can load it by file:// URL
+  const htmlPath = path.join(os.tmpdir(), `dispatch-manifest-src-${Date.now()}.html`);
+  fs.writeFileSync(htmlPath, html, 'utf8');
+
+  const pdfWin = new BrowserWindow({
+    show: false,
+    webPreferences: { nodeIntegration: false, contextIsolation: true }
+  });
+
+  try {
+    await pdfWin.loadFile(htmlPath);
+    // Wait for images / fonts
+    await new Promise(r => setTimeout(r, 600));
+
+    const pdfData = await pdfWin.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      margins: { marginType: 'custom', top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 }
+    });
+
+    fs.writeFileSync(outPath, pdfData);
+    pdfWin.destroy();
+
+    // Clean up temp HTML
+    try { fs.unlinkSync(htmlPath); } catch (_) {}
+
+    // Open the PDF with the system default viewer
+    await shell.openPath(outPath);
+    return { success: true, path: outPath };
+  } catch (err) {
+    pdfWin.destroy();
+    try { fs.unlinkSync(htmlPath); } catch (_) {}
+    throw err;
+  }
+});
+
 // Quit when all windows are closed
 app.on('window-all-closed', () => {
   app.quit();

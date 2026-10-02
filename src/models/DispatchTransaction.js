@@ -37,6 +37,7 @@ const dispatchTransactionSchema = new mongoose.Schema({
     dispatchedPartCount: { type: Number, default: 0 },
     
     operatorUsername: { type: String, required: true },
+    operatorFullName: { type: String, default: '' },
     startedAt: { type: Date, default: Date.now, index: true },
     completedAt: { type: Date },
     cancelledAt: { type: Date },

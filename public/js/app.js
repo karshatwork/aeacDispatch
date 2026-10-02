@@ -13,6 +13,9 @@ function setQuantityMode(mode) {
   const btnParts = document.getElementById('btn-mode-parts');
   const label = document.getElementById('dispatch-qty-label');
   const input = document.getElementById('dispatch-target-qty');
+  const select = document.getElementById('dispatch-model-select');
+  const selectedOpt = select ? select.options[select.selectedIndex] : null;
+  const batchSize = selectedOpt ? (parseInt(selectedOpt.dataset.batchSize, 10) || 20) : 20;
 
   if (mode === 'boxes') {
     if (btnBoxes) btnBoxes.className = 'toggle-segment active';
@@ -22,9 +25,38 @@ function setQuantityMode(mode) {
   } else {
     if (btnBoxes) btnBoxes.className = 'toggle-segment';
     if (btnParts) btnParts.className = 'toggle-segment active';
-    if (label) label.textContent = 'REQUIRED PARTS COUNT';
-    if (input && parseInt(input.value, 10) <= 10) input.value = 50;
+    if (label) label.textContent = `REQUIRED PARTS COUNT (${batchSize}/box)`;
+    if (input && parseInt(input.value, 10) <= 10) input.value = batchSize * 2;
   }
+  validateDispatchQuantity();
+}
+
+function validateDispatchQuantity() {
+  const select = document.getElementById('dispatch-model-select');
+  const selectedOpt = select ? select.options[select.selectedIndex] : null;
+  const input = document.getElementById('dispatch-target-qty');
+  const hintEl = document.getElementById('dispatch-qty-hint');
+  if (!input || !selectedOpt) return { valid: true };
+
+  const qty = parseInt(input.value, 10);
+  const batchSize = parseInt(selectedOpt.dataset.batchSize, 10) || 20;
+
+  if (currentQuantityMode === 'parts') {
+    if (qty > 0 && qty % batchSize !== 0) {
+      const nextMultiple = Math.ceil(qty / batchSize) * batchSize;
+      if (hintEl) {
+        hintEl.style.display = 'block';
+        hintEl.innerHTML = `<span style="color: #dc2626; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;" onclick="document.getElementById('dispatch-target-qty').value=${nextMultiple}; validateDispatchQuantity();" title="Click to apply recommended quantity"><i class="ri-alert-line"></i> Not a multiple of ${batchSize}. Recommended: <strong style="text-decoration: underline;">${nextMultiple} parts</strong></span>`;
+      }
+      return { valid: false, qty, batchSize, nextMultiple };
+    }
+  }
+
+  if (hintEl) {
+    hintEl.style.display = 'none';
+    hintEl.textContent = '';
+  }
+  return { valid: true, qty, batchSize };
 }
 
 // ============================================================================
@@ -336,15 +368,17 @@ async function handleLogin(e) {
   }
 }
 
-function handleLogout() {
+async function handleLogout() {
   currentTab = 'tab-dispatch';
-  api.clearSession();
+  activeTx = null;
   if (ws) {
     ws.close();
     ws = null;
   }
+  await api.logout();
   showLoginScreen('You have logged out.');
 }
+
 
 async function initApp() {
   currentTab = 'tab-dispatch';
@@ -479,6 +513,12 @@ function updateScannerStatusPill(status) {
 
 function handleHardwareScan(qrData) {
   console.log('[HARDWARE SCAN]', qrData);
+  // 1. If an action modal is open (Hold, Reject, Release, Reopen), route scan to modal verification
+  if (activeModalBoxId && activeModalType) {
+    handleModalScanVerification(qrData);
+    return;
+  }
+
   if (currentTab === 'tab-dispatch' && activeTx && activeTx.status === 'in_progress') {
     processBoxScan(qrData);
   } else if (currentTab === 'tab-traceability') {
@@ -493,6 +533,7 @@ function handleHardwareScan(qrData) {
     showBannerAlert(`Scanned QR: ${qrData}`, 'info');
   }
 }
+
 
 // ============================================================================
 // TAB NAVIGATION & CLOCK
@@ -575,20 +616,37 @@ async function loadDispatchView() {
   await checkActiveDispatch();
 }
 
-async function loadModelSelector() {
+async function loadModelSelector(preserveSelected = true) {
   try {
-    const res = await api.getModels();
     const select = document.getElementById('dispatch-model-select');
+    if (!select) return;
+    const currentVal = (preserveSelected && select.value) ? select.value : null;
+
+    const res = await api.getModels();
     select.innerHTML = '';
 
-    res.models.forEach(m => {
+    if (!res.models || res.models.length === 0) {
       const opt = document.createElement('option');
-      opt.value = m.modelId;
-      opt.textContent = `${m.modelId} - ${m.modelName} (Part: ${m.customerPartNo})`;
-      opt.dataset.availableBoxes = m.availableBoxes;
-      opt.dataset.availableParts = m.availableParts;
+      opt.value = '';
+      opt.textContent = 'No models available';
+      opt.dataset.availableBoxes = 0;
+      opt.dataset.availableParts = 0;
       select.appendChild(opt);
-    });
+    } else {
+      res.models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.modelId;
+        opt.textContent = `${m.modelId} - ${m.modelName} (Part: ${m.customerPartNo})`;
+        opt.dataset.availableBoxes = m.availableBoxes;
+        opt.dataset.availableParts = m.availableParts;
+        opt.dataset.batchSize = m.batchSize || 20;
+        select.appendChild(opt);
+      });
+    }
+
+    if (currentVal && Array.from(select.options).some(o => o.value === currentVal)) {
+      select.value = currentVal;
+    }
 
     if (window.scadaDropdown && select) {
       window.scadaDropdown.attach(select).sync();
@@ -597,6 +655,7 @@ async function loadModelSelector() {
     updateAvailableStockDisplay();
     select.onchange = () => {
       updateAvailableStockDisplay();
+      validateDispatchQuantity();
       if (select._scadaDropdown) select._scadaDropdown.sync();
     };
   } catch (err) {
@@ -606,14 +665,23 @@ async function loadModelSelector() {
 
 function updateAvailableStockDisplay() {
   const select = document.getElementById('dispatch-model-select');
+  if (!select) return;
   const selectedOpt = select.options[select.selectedIndex];
-  if (!selectedOpt) return;
+  const boxEl = document.getElementById('disp-avail-boxes');
+  const partEl = document.getElementById('disp-avail-parts');
+
+  if (!selectedOpt) {
+    if (boxEl) boxEl.textContent = '0 BOXES';
+    if (partEl) partEl.textContent = '0 PARTS';
+    return;
+  }
 
   const boxes = selectedOpt.dataset.availableBoxes || 0;
   const parts = selectedOpt.dataset.availableParts || 0;
 
-  document.getElementById('disp-avail-boxes').textContent = `${boxes} BOXES`;
-  document.getElementById('disp-avail-parts').textContent = `${parts} AVAILABLE PARTS`;
+  if (boxEl) boxEl.textContent = `${boxes} BOXES`;
+  if (partEl) partEl.textContent = `${parts} AVAILABLE PARTS`;
+  validateDispatchQuantity();
 }
 
 
@@ -625,7 +693,7 @@ async function checkActiveDispatch() {
       renderActiveDispatchUI();
     } else {
       activeTx = null;
-      renderIdleDispatchUI();
+      await renderIdleDispatchUI();
     }
   } catch (err) {
     console.error('Check active dispatch error:', err.message);
@@ -635,10 +703,34 @@ async function checkActiveDispatch() {
 async function handleStartDispatch() {
   const select = document.getElementById('dispatch-model-select');
   const modelId = select.value;
-  const qty = parseInt(document.getElementById('dispatch-target-qty').value, 10);
+  const input = document.getElementById('dispatch-target-qty');
+  const qty = parseInt(input.value, 10);
 
   if (!qty || qty <= 0) {
     await customModal.alert('Please enter a positive required quantity', { title: 'INVALID QUANTITY', type: 'warning' });
+    return;
+  }
+
+  const selectedOpt = select.options[select.selectedIndex];
+  const batchSize = selectedOpt ? (parseInt(selectedOpt.dataset.batchSize, 10) || 20) : 20;
+
+  if (currentQuantityMode === 'parts' && qty % batchSize !== 0) {
+    const nextMultiple = Math.ceil(qty / batchSize) * batchSize;
+    const boxesCount = nextMultiple / batchSize;
+    sounds.playViolation();
+    const applyRecommended = await customModal.confirm(
+      `Selected parts quantity (${qty}) is not a multiple of the packaging standard (${batchSize} parts/box for ${modelId}).\n\nRecommended next multiple: ${nextMultiple} parts (${boxesCount} full ${boxesCount === 1 ? 'box' : 'boxes'}).\n\nWould you like to set the required quantity to ${nextMultiple} parts?`,
+      {
+        title: 'INVALID PARTS QUANTITY',
+        type: 'warning',
+        confirmText: `SET TO ${nextMultiple} PARTS`,
+        cancelText: 'CANCEL'
+      }
+    );
+    if (applyRecommended) {
+      input.value = nextMultiple;
+      validateDispatchQuantity();
+    }
     return;
   }
 
@@ -661,9 +753,9 @@ function renderActiveDispatchUI() {
   document.getElementById('active-tx-id').textContent = activeTx.dispatchId;
   document.getElementById('active-tx-target').textContent = `${activeTx.targetQuantity} ${activeTx.targetType.toUpperCase()}`;
   document.getElementById('active-tx-model').textContent = activeTx.modelId;
-  document.getElementById('active-tx-operator').textContent = activeTx.operatorUsername;
+  document.getElementById('active-tx-operator').textContent = activeTx.operatorFullName || activeTx.operatorUsername;
 
-  // Render Pick Table
+  // Render Pick Table (5 Columns - QR column removed per operator UX)
   const tbody = document.getElementById('fifo-pick-tbody');
   tbody.innerHTML = '';
 
@@ -672,43 +764,44 @@ function renderActiveDispatchUI() {
   activeTx.allocatedBoxes.forEach((box, index) => {
     const isScanned = scannedBoxIds.includes(box.boxId.toString());
     const tr = document.createElement('tr');
+    tr.setAttribute('data-box-id', box.boxId);
     if (isScanned) tr.style.background = 'rgba(5, 150, 105, 0.15)';
 
     tr.innerHTML = `
       <td><strong>#${index + 1}</strong></td>
-      <td><strong style="color: #38bdf8;">BOX-${box.batchNumber}</strong></td>
+      <td><strong style="color: #0284c7;">BOX-${box.batchNumber}</strong></td>
       <td>${new Date(box.closedAt).toISOString().slice(0, 16).replace('T', ' ')}</td>
       <td><strong>${box.completedCount} PCS</strong></td>
-      <td style="font-size: 10px; color: #94a3b8; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-        ${box.batchQrData}
-      </td>
       <td>
-        ${isScanned ? '<span class="badge badge-verified"><i class="ri-check-line"></i> VERIFIED</span>' : '<span class="badge badge-pending">PENDING SCAN</span>'}
+        ${isScanned ? '<span class="badge badge-verified"><i class="ri-check-line"></i> VERIFIED</span>' : '<span class="badge badge-pending"><i class="ri-barcode-box-line"></i> PENDING SCAN</span>'}
       </td>
     `;
+
     tbody.appendChild(tr);
   });
 
-  // Update progress bar & text
+  // Update progress bar
   const scannedCount = activeTx.scannedBoxes ? activeTx.scannedBoxes.length : 0;
   const totalCount = activeTx.allocatedBoxes.length;
-  const pct = Math.round((scannedCount / totalCount) * 100);
+  const pct = totalCount > 0 ? Math.round((scannedCount / totalCount) * 100) : 0;
 
   const progressFill = document.getElementById('dispatch-progress-fill');
-  if (progressFill) progressFill.style.width = `${pct}%`;
+  if (progressFill) {
+    progressFill.style.width = `${pct}%`;
+    progressFill.style.background = pct === 100 ? '#059669' : '#0284c7';
+  }
 
-  document.getElementById('dispatch-progress-text').textContent = `PROGRESS: ${scannedCount} / ${totalCount} BOXES SCANNED (${pct}%)`;
+  const progText = document.getElementById('dispatch-progress-text');
+  if (progText) {
+    progText.textContent = `PROGRESS: ${scannedCount} / ${totalCount} BOXES SCANNED (${pct}%)`;
+  }
   document.getElementById('btn-confirm-dispatch').disabled = scannedCount !== totalCount;
 
-  // Update Radial Gauge
-  const radialGauge = document.getElementById('dispatch-radial-gauge');
+  // Update Telemetry Counters
   const radialPct = document.getElementById('dispatch-radial-pct');
   const radialBoxes = document.getElementById('dispatch-radial-boxes');
   const radialParts = document.getElementById('dispatch-radial-parts');
 
-  const circumference = 2 * Math.PI * 70; // 439.82
-  const offset = circumference - (pct / 100) * circumference;
-  if (radialGauge) radialGauge.style.strokeDashoffset = offset;
   if (radialPct) radialPct.textContent = `${pct}%`;
 
   const totalParts = activeTx.allocatedBoxes.reduce((sum, b) => sum + (b.completedCount || 0), 0);
@@ -719,7 +812,7 @@ function renderActiveDispatchUI() {
   if (radialBoxes) radialBoxes.textContent = `${scannedCount} / ${totalCount}`;
   if (radialParts) radialParts.textContent = `${scannedParts} / ${totalParts}`;
 
-  // Update Next Target Reticle
+  // Update Next Target Reticle (Inline Compact Layout)
   const nextUnscannedBox = activeTx.allocatedBoxes.find(b => !scannedBoxIds.includes(b.boxId.toString()));
   const reticleBatch = document.getElementById('reticle-next-batch');
   const reticleModel = document.getElementById('reticle-next-model');
@@ -728,73 +821,63 @@ function renderActiveDispatchUI() {
   if (nextUnscannedBox) {
     if (reticleBatch) reticleBatch.textContent = `BATCH #${nextUnscannedBox.batchNumber}`;
     if (reticleModel) reticleModel.textContent = activeTx.modelId;
-    if (reticleSub) reticleSub.innerHTML = `Produced: ${new Date(nextUnscannedBox.closedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} &bull; Qty: ${nextUnscannedBox.completedCount} Pcs`;
+    if (reticleSub) {
+      const dateStr = nextUnscannedBox.batchDate ? nextUnscannedBox.batchDate.replace(/\./g, '-') : (nextUnscannedBox.closedAt ? new Date(nextUnscannedBox.closedAt).toISOString().slice(0, 10) : '--');
+      reticleSub.innerHTML = `&bull; Produced: ${dateStr} &bull; Qty: ${nextUnscannedBox.completedCount} Pcs`;
+    }
   } else {
     if (reticleBatch) reticleBatch.textContent = `ALL VERIFIED`;
-    if (reticleSub) reticleSub.innerHTML = `100% of order scanned. Ready to complete dispatch.`;
+    if (reticleSub) reticleSub.innerHTML = `&bull; 100% of order scanned &bull; Ready to complete dispatch`;
   }
 
-  // Update Visual Animated Transfer Deck
-  const infeedLane = document.getElementById('transfer-infeed-lane');
-  const dockLane = document.getElementById('transfer-dock-lane');
-  const infeedCountEl = document.getElementById('transfer-infeed-count');
-  const dockCountEl = document.getElementById('transfer-dock-count');
-
-  if (infeedLane && dockLane) {
-    infeedLane.innerHTML = '';
-    dockLane.innerHTML = '';
-
-    const pendingBoxes = activeTx.allocatedBoxes.filter(b => !scannedBoxIds.includes(b.boxId.toString()));
-    const loadedBoxes = activeTx.allocatedBoxes.filter(b => scannedBoxIds.includes(b.boxId.toString()));
-
-    if (infeedCountEl) infeedCountEl.textContent = `${pendingBoxes.length} PENDING`;
-    if (dockCountEl) dockCountEl.textContent = `${loadedBoxes.length} LOADED`;
-
-    // Render pending infeed boxes
-    if (pendingBoxes.length === 0) {
-      infeedLane.innerHTML = '<span style="color: #64748b; font-size: 11px; font-family: var(--font-mono); margin: auto;">ALL BOXES TRANSFERRED</span>';
-    } else {
-      pendingBoxes.forEach((box, i) => {
-        const isNextTarget = i === 0;
-        const bEl = document.createElement('div');
-        bEl.className = `dispatch-box-item ${isNextTarget ? 'target-pulse' : ''}`;
-        bEl.innerHTML = `
-          <div style="font-size: 8px; opacity: 0.85;">#${box.batchNumber}</div>
-          <div style="font-size: 10px; font-weight: 800;">${box.completedCount}P</div>
-          ${isNextTarget ? '<div style="font-size: 7px; color: #7dd3fc; font-weight: 900; letter-spacing: 0.5px;">NEXT</div>' : ''}
-        `;
-        bEl.title = `Box #${box.batchNumber} (${box.completedCount} Pcs) - Next Target`;
-        infeedLane.appendChild(bEl);
-      });
+  // Update Status Badge
+  const statusBadge = document.getElementById('active-tx-status-badge');
+  if (scannedCount === totalCount && totalCount > 0) {
+    if (statusBadge) {
+      statusBadge.className = 'badge badge-verified';
+      statusBadge.textContent = 'READY_FOR_LOAD';
     }
-
-    // Render loaded pallet boxes
-    if (loadedBoxes.length === 0) {
-      dockLane.innerHTML = '<span style="color: #64748b; font-size: 11px; font-family: var(--font-mono); margin: auto;">WAITING FOR SCAN...</span>';
-    } else {
-      loadedBoxes.forEach(box => {
-        const bEl = document.createElement('div');
-        bEl.className = 'dispatch-box-item loaded-check';
-        bEl.innerHTML = `
-          <i class="ri-checkbox-circle-fill" style="font-size: 16px; color: #a7f3d0;"></i>
-          <div style="font-size: 8px; font-weight: 800;">#${box.batchNumber}</div>
-        `;
-        bEl.title = `Loaded Box #${box.batchNumber} (${box.completedCount} Pcs)`;
-        dockLane.appendChild(bEl);
-      });
+  } else {
+    if (statusBadge) {
+      statusBadge.className = 'badge badge-available';
+      statusBadge.textContent = 'IN PROGRESS';
     }
+  }
+
+  // Render Staging Bay Warehouse Animation Entity
+  if (window.dispatchAnimation) {
+    window.dispatchAnimation.render({
+      allocatedBoxes: activeTx.allocatedBoxes,
+      scannedBoxes: activeTx.scannedBoxes || [],
+      isComplete: scannedCount === totalCount && totalCount > 0
+    });
   }
 }
 
-function renderIdleDispatchUI() {
-  document.getElementById('dispatch-setup-card').style.display = 'block';
-  document.getElementById('dispatch-active-card').style.display = 'none';
+async function renderIdleDispatchUI() {
+  const setupCard = document.getElementById('dispatch-setup-card');
+  const activeCard = document.getElementById('dispatch-active-card');
+  if (setupCard) setupCard.style.display = 'block';
+  if (activeCard) activeCard.style.display = 'none';
+
   const progressFill = document.getElementById('dispatch-progress-fill');
   if (progressFill) progressFill.style.width = '0%';
-  document.getElementById('fifo-pick-tbody').innerHTML = '<tr><td colspan="6" style="text-align: center; color: #64748b;">No active dispatch session. Select a model and start a session above.</td></tr>';
-  document.getElementById('dispatch-progress-text').textContent = 'NO ACTIVE DISPATCH';
-  document.getElementById('btn-confirm-dispatch').disabled = true;
+  const pickTbody = document.getElementById('fifo-pick-tbody');
+  if (pickTbody) {
+    pickTbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b;">No active dispatch session. Select a model and start a session above.</td></tr>';
+  }
+  const progText = document.getElementById('dispatch-progress-text');
+  if (progText) progText.textContent = 'NO ACTIVE DISPATCH';
+  const confirmBtn = document.getElementById('btn-confirm-dispatch');
+  if (confirmBtn) confirmBtn.disabled = true;
+
+  if (window.dispatchAnimation) {
+    window.dispatchAnimation.reset();
+  }
   clearBannerAlert();
+
+  // Reload available models and live stock count for the initiate new dispatch session card
+  await loadModelSelector(true);
 }
 
 async function processBoxScan(scannedPayload) {
@@ -805,6 +888,10 @@ async function processBoxScan(scannedPayload) {
     if (res.success) {
       sounds.playSuccess();
       showBannerAlert(res.message, 'success');
+      // Trigger the fun optical laser scan flash and forklift stacking motion on animation entity
+      if (window.dispatchAnimation) {
+        window.dispatchAnimation.triggerScanEffect();
+      }
       // Refresh active transaction state
       await checkActiveDispatch();
     } else {
@@ -835,8 +922,14 @@ async function handleConfirmDispatch() {
     const res = await api.confirmDispatch(activeTx.dispatchId, notes || '');
     sounds.playCompletion();
     const completedDispatchId = activeTx.dispatchId;
+
+    // Trigger forklift departure celebration animation before resetting
+    if (window.dispatchAnimation) {
+      await window.dispatchAnimation.triggerDeparture();
+    }
+
     activeTx = null;
-    renderIdleDispatchUI();
+    await renderIdleDispatchUI();
     showBannerAlert(res.message, 'success');
 
     // Automatically open the detailed Delivery Challan / Bill!
@@ -895,7 +988,7 @@ async function submitCancelDispatchModal() {
     sounds.playAlert();
     closeModals();
     activeTx = null;
-    renderIdleDispatchUI();
+    await renderIdleDispatchUI();
     showBannerAlert('Dispatch session cancelled.', 'info', 4000);
   } catch (err) {
     if (errEl) {
@@ -1131,7 +1224,7 @@ async function applyInventoryFilter(page = 1) {
     const tbody = document.getElementById('inventory-tbody');
     if (!tbody) return;
 
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 24px;"><i class="ri-loader-4-line scada-spin" style="font-size: 16px; display: inline-block; vertical-align: middle; margin-right: 6px;"></i> Loading inventory data...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: #64748b; padding: 24px;"><i class="ri-loader-4-line scada-spin" style="font-size: 16px; display: inline-block; vertical-align: middle; margin-right: 6px;"></i> Loading inventory data...</td></tr>';
 
     const queryParams = { modelId, status, page: _invCurrentPage, limit: _invLimit };
     if (search) queryParams.search = search;
@@ -1161,7 +1254,7 @@ async function applyInventoryFilter(page = 1) {
     if (btnNext) btnNext.disabled = _invCurrentPage >= _invTotalPages;
 
     if (!res || !res.boxes || res.boxes.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 32px;"><i class="ri-inbox-line" style="font-size: 24px; display: block; margin-bottom: 6px; color: #94a3b8;"></i> No boxes found matching filter criteria.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: #64748b; padding: 32px;"><i class="ri-inbox-line" style="font-size: 24px; display: block; margin-bottom: 6px; color: #94a3b8;"></i> No boxes found matching filter criteria.</td></tr>';
       return;
     }
 
@@ -1216,24 +1309,25 @@ async function applyInventoryFilter(page = 1) {
           </button>
       `;
 
+      const safeQrParam = encodeURIComponent(b.batchQrData || '');
       if (b.status === 'available' && isSupervisorOrAbove) {
         actionsHtml += `
-          <button class="btn-scada btn-warning" style="padding: 2px 7px; font-size: 10px; height: 26px;" onclick="openHoldModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0})">
+          <button class="btn-scada btn-warning" style="padding: 2px 7px; font-size: 10px; height: 26px;" onclick="openHoldModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0}, '${safeQrParam}')">
             <i class="ri-pause-circle-line"></i> HOLD
           </button>
-          <button class="btn-scada btn-danger" style="padding: 2px 7px; font-size: 10px; height: 26px;" onclick="openRejectModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0})">
+          <button class="btn-scada btn-danger" style="padding: 2px 7px; font-size: 10px; height: 26px;" onclick="openRejectModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0}, '${safeQrParam}')">
             <i class="ri-close-circle-line"></i> REJECT
           </button>
         `;
       } else if (b.status === 'hold' && isSupervisorOrAbove) {
         actionsHtml += `
-          <button class="btn-scada btn-success" style="padding: 2px 9px; font-size: 10px; height: 26px;" onclick="openReleaseModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0})">
+          <button class="btn-scada btn-success" style="padding: 2px 9px; font-size: 10px; height: 26px;" onclick="openReleaseModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0}, '${safeQrParam}')">
             <i class="ri-play-circle-line"></i> RELEASE
           </button>
         `;
       } else if (b.status === 'rejected' && isManagerOrAbove) {
         actionsHtml += `
-          <button class="btn-scada btn-primary" style="padding: 2px 9px; font-size: 10px; height: 26px;" onclick="openReopenModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0})">
+          <button class="btn-scada btn-primary" style="padding: 2px 9px; font-size: 10px; height: 26px;" onclick="openReopenModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0}, '${safeQrParam}')">
             <i class="ri-restart-line"></i> REOPEN
           </button>
         `;
@@ -1244,6 +1338,7 @@ async function applyInventoryFilter(page = 1) {
           </button>
         `;
       }
+
 
       actionsHtml += `</div>`;
 
@@ -1264,15 +1359,159 @@ async function applyInventoryFilter(page = 1) {
     });
   } catch (err) {
     console.error('Failed to load inventory:', err.message);
+    const tbody = document.getElementById('inventory-tbody');
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: #dc2626; padding: 24px;"><i class="ri-error-warning-line" style="font-size: 20px; vertical-align: middle; margin-right: 6px;"></i> Failed to load inventory: ${err.message || 'Server error'}</td></tr>`;
+    }
   }
 }
 
 // Modal actions: Hold, Release, Reject, Reopen
 let activeModalBoxId = null;
+let activeModalBatchNumber = null;
+let activeModalQrData = null;
+let activeModalType = null;
+let activeModalVerified = false;
 
-function openHoldModal(boxId, batchNumber, modelId, qty) {
+function resetModalScanState(modalType, batchNumber) {
+  const cardEl = document.getElementById(`modal-${modalType}-scan-card`);
+  const titleEl = document.getElementById(`modal-${modalType}-scan-title`);
+  const descEl = document.getElementById(`modal-${modalType}-scan-desc`);
+  const pillEl = document.getElementById(`modal-${modalType}-scan-pill`);
+
+  if (cardEl) {
+    cardEl.style.background = '#fffbeb';
+    cardEl.style.border = '1px dashed #f59e0b';
+  }
+  if (titleEl) {
+    titleEl.style.color = '#92400e';
+    titleEl.textContent = 'PHYSICAL BOX SCAN REQUIRED';
+  }
+  if (descEl) {
+    descEl.style.color = '#b45309';
+    descEl.textContent = `Scan barcode on Box #${batchNumber} to verify in hand`;
+  }
+  if (pillEl) {
+    pillEl.className = 'badge';
+    pillEl.style.background = '#fde68a';
+    pillEl.style.color = '#92400e';
+    pillEl.textContent = 'AWAITING SCAN';
+  }
+}
+
+function handleModalScanVerification(qrData) {
+  const scanned = (qrData || '').trim();
+  const targetBatchStr = String(activeModalBatchNumber);
+  const targetQr = (activeModalQrData || '').trim();
+
+  // Match: exact QR payload, exact batch number string, or embedded delimiter
+  const isMatch = (targetQr && scanned === targetQr) ||
+                  scanned === targetBatchStr ||
+                  scanned.includes(`|${targetBatchStr}*`) ||
+                  scanned.includes(`|${targetBatchStr}|`) ||
+                  scanned.endsWith(`|${targetBatchStr}`);
+
+  const modalType = activeModalType;
+  const cardEl = document.getElementById(`modal-${modalType}-scan-card`);
+  const titleEl = document.getElementById(`modal-${modalType}-scan-title`);
+  const descEl = document.getElementById(`modal-${modalType}-scan-desc`);
+  const pillEl = document.getElementById(`modal-${modalType}-scan-pill`);
+  const errEl = document.getElementById(`modal-${modalType}-error`);
+
+  if (isMatch) {
+    activeModalVerified = true;
+    sounds.playSuccess();
+    if (errEl) errEl.style.display = 'none';
+
+    if (cardEl) {
+      cardEl.style.background = '#f0fdf4';
+      cardEl.style.border = '1px solid #86efac';
+    }
+    if (titleEl) {
+      titleEl.style.color = '#15803d';
+      titleEl.textContent = 'PHYSICAL BOX VERIFIED';
+    }
+    if (descEl) {
+      descEl.style.color = '#166534';
+      descEl.textContent = `Box #${targetBatchStr} barcode scanned and confirmed.`;
+    }
+    if (pillEl) {
+      pillEl.className = 'badge badge-success';
+      pillEl.style.background = '';
+      pillEl.style.color = '';
+      pillEl.textContent = 'VERIFIED';
+    }
+
+    // "if typing enter/clicking the button is required, with scan, it should not be required..."
+    // Auto-submit immediately if mandatory inputs are present!
+    if (modalType === 'hold') {
+      const reason = document.getElementById('modal-hold-reason')?.value;
+      const remarks = document.getElementById('modal-hold-remarks')?.value.trim();
+      if (reason && remarks) {
+        submitHoldModal();
+      } else {
+        if (!reason) document.getElementById('modal-hold-reason')?.focus();
+        else document.getElementById('modal-hold-remarks')?.focus();
+      }
+    } else if (modalType === 'reject') {
+      const reason = document.getElementById('modal-reject-reason')?.value;
+      const remarks = document.getElementById('modal-reject-remarks')?.value.trim();
+      if (reason && remarks) {
+        submitRejectModal();
+      } else {
+        if (!reason) document.getElementById('modal-reject-reason')?.focus();
+        else document.getElementById('modal-reject-remarks')?.focus();
+      }
+    } else if (modalType === 'release') {
+      const remarks = document.getElementById('modal-release-remarks')?.value.trim();
+      if (remarks && remarks.length >= 3) {
+        submitReleaseModal();
+      } else {
+        document.getElementById('modal-release-remarks')?.focus();
+      }
+    } else if (modalType === 'reopen') {
+      const remarks = document.getElementById('modal-reopen-remarks')?.value.trim();
+      if (remarks && remarks.length >= 5) {
+        submitReopenModal();
+      } else {
+        document.getElementById('modal-reopen-remarks')?.focus();
+      }
+    }
+  } else {
+    sounds.playViolation();
+    if (errEl) {
+      errEl.textContent = `PHYSICAL SCAN MISMATCH: Scanned "${scanned}" does not match Box #${targetBatchStr}!`;
+      errEl.style.display = 'block';
+    }
+    if (cardEl) {
+      cardEl.style.background = '#fef2f2';
+      cardEl.style.border = '1px solid #fca5a5';
+    }
+    if (titleEl) {
+      titleEl.style.color = '#991b1b';
+      titleEl.textContent = 'BARCODE MISMATCH';
+    }
+    if (descEl) {
+      descEl.style.color = '#dc2626';
+      descEl.textContent = `Scanned barcode does not match Box #${targetBatchStr}!`;
+    }
+    if (pillEl) {
+      pillEl.className = 'badge badge-danger';
+      pillEl.style.background = '';
+      pillEl.style.color = '';
+      pillEl.textContent = 'MISMATCH';
+    }
+  }
+}
+
+function openHoldModal(boxId, batchNumber, modelId, qty, encodedQr = '') {
   if (window.sounds) window.sounds.playClick();
   activeModalBoxId = boxId;
+  activeModalBatchNumber = batchNumber;
+  activeModalQrData = decodeURIComponent(encodedQr || '');
+  activeModalType = 'hold';
+  activeModalVerified = false;
+
   const title = document.getElementById('modal-hold-title');
   if (title) title.textContent = `PUT BOX #${batchNumber} ON HOLD`;
 
@@ -1287,6 +1526,8 @@ function openHoldModal(boxId, batchNumber, modelId, qty) {
     errEl.style.display = 'none';
     errEl.textContent = '';
   }
+
+  resetModalScanState('hold', batchNumber);
 
   // Populate reasons and force blank default selection
   populateModalReasonDropdowns();
@@ -1332,6 +1573,15 @@ async function submitHoldModal() {
     return;
   }
 
+  if (!activeModalVerified) {
+    if (errEl) {
+      errEl.textContent = `PHYSICAL SCAN MANDATORY: Please scan Box #${activeModalBatchNumber} barcode to authorize hold.`;
+      errEl.style.display = 'block';
+    }
+    sounds.playViolation();
+    return;
+  }
+
   if (errEl) errEl.style.display = 'none';
 
   try {
@@ -1350,9 +1600,14 @@ async function submitHoldModal() {
   }
 }
 
-function openReleaseModal(boxId, batchNumber, modelId, qty) {
+function openReleaseModal(boxId, batchNumber, modelId, qty, encodedQr = '') {
   if (window.sounds) window.sounds.playClick();
   activeModalBoxId = boxId;
+  activeModalBatchNumber = batchNumber;
+  activeModalQrData = decodeURIComponent(encodedQr || '');
+  activeModalType = 'release';
+  activeModalVerified = false;
+
   const title = document.getElementById('modal-release-title');
   if (title) title.textContent = `RELEASE BOX #${batchNumber}`;
 
@@ -1367,6 +1622,8 @@ function openReleaseModal(boxId, batchNumber, modelId, qty) {
     errEl.style.display = 'none';
     errEl.textContent = '';
   }
+
+  resetModalScanState('release', batchNumber);
 
   const remarksInput = document.getElementById('modal-release-remarks');
   if (remarksInput) {
@@ -1394,6 +1651,15 @@ async function submitReleaseModal() {
     return;
   }
 
+  if (!activeModalVerified) {
+    if (errEl) {
+      errEl.textContent = `PHYSICAL SCAN MANDATORY: Please scan Box #${activeModalBatchNumber} barcode to authorize release.`;
+      errEl.style.display = 'block';
+    }
+    sounds.playViolation();
+    return;
+  }
+
   try {
     await api.releaseHold(activeModalBoxId, remarks);
     closeModals();
@@ -1410,13 +1676,18 @@ async function submitReleaseModal() {
   }
 }
 
-async function quickReleaseHold(boxId, batchNumber) {
-  openReleaseModal(boxId, batchNumber);
+async function quickReleaseHold(boxId, batchNumber, modelId, qty, encodedQr = '') {
+  openReleaseModal(boxId, batchNumber, modelId, qty, encodedQr);
 }
 
-function openRejectModal(boxId, batchNumber, modelId, qty) {
+function openRejectModal(boxId, batchNumber, modelId, qty, encodedQr = '') {
   if (window.sounds) window.sounds.playClick();
   activeModalBoxId = boxId;
+  activeModalBatchNumber = batchNumber;
+  activeModalQrData = decodeURIComponent(encodedQr || '');
+  activeModalType = 'reject';
+  activeModalVerified = false;
+
   const title = document.getElementById('modal-reject-title');
   if (title) title.textContent = `REJECT BOX #${batchNumber}`;
 
@@ -1431,6 +1702,8 @@ function openRejectModal(boxId, batchNumber, modelId, qty) {
     errEl.style.display = 'none';
     errEl.textContent = '';
   }
+
+  resetModalScanState('reject', batchNumber);
 
   // Populate reasons and force blank default selection
   populateModalReasonDropdowns();
@@ -1476,6 +1749,15 @@ async function submitRejectModal() {
     return;
   }
 
+  if (!activeModalVerified) {
+    if (errEl) {
+      errEl.textContent = `PHYSICAL SCAN MANDATORY: Please scan Box #${activeModalBatchNumber} barcode to authorize rejection.`;
+      errEl.style.display = 'block';
+    }
+    sounds.playViolation();
+    return;
+  }
+
   if (errEl) errEl.style.display = 'none';
 
   try {
@@ -1494,9 +1776,14 @@ async function submitRejectModal() {
   }
 }
 
-function openReopenModal(boxId, batchNumber, modelId, qty) {
+function openReopenModal(boxId, batchNumber, modelId, qty, encodedQr = '') {
   if (window.sounds) window.sounds.playClick();
   activeModalBoxId = boxId;
+  activeModalBatchNumber = batchNumber;
+  activeModalQrData = decodeURIComponent(encodedQr || '');
+  activeModalType = 'reopen';
+  activeModalVerified = false;
+
   const title = document.getElementById('modal-reopen-title');
   if (title) title.textContent = `REOPEN BOX #${batchNumber}`;
 
@@ -1511,6 +1798,8 @@ function openReopenModal(boxId, batchNumber, modelId, qty) {
     errEl.style.display = 'none';
     errEl.textContent = '';
   }
+
+  resetModalScanState('reopen', batchNumber);
 
   const remarksInput = document.getElementById('modal-reopen-remarks');
   if (remarksInput) {
@@ -1533,6 +1822,15 @@ async function submitReopenModal() {
     }
     sounds.playViolation();
     if (remarksEl) remarksEl.focus();
+    return;
+  }
+
+  if (!activeModalVerified) {
+    if (errEl) {
+      errEl.textContent = `PHYSICAL SCAN MANDATORY: Please scan Box #${activeModalBatchNumber} barcode to authorize reopen.`;
+      errEl.style.display = 'block';
+    }
+    sounds.playViolation();
     return;
   }
 
@@ -1563,11 +1861,17 @@ function openModal(modalId) {
 }
 
 function closeModals() {
+  activeModalBoxId = null;
+  activeModalBatchNumber = null;
+  activeModalQrData = null;
+  activeModalType = null;
+  activeModalVerified = false;
   document.querySelectorAll('.modal-overlay').forEach(m => {
     m.classList.remove('active');
     m.style.display = 'none';
   });
 }
+
 
 // Global modal dismiss listeners (Escape key & backdrop click)
 document.addEventListener('keydown', (e) => {
@@ -2002,6 +2306,7 @@ function resetReportsFilter() {
   const dateFrom = document.getElementById('rep-filter-date-from');
   const dateTo = document.getElementById('rep-filter-date-to');
   const modelEl = document.getElementById('rep-filter-model');
+  const statusEl = document.getElementById('rep-filter-status');
 
   // Reset to current month defaults
   const now = new Date();
@@ -2021,6 +2326,10 @@ function resetReportsFilter() {
     modelEl.value = 'ALL';
     if (modelEl._scadaDropdown) modelEl._scadaDropdown.sync();
   }
+  if (statusEl) {
+    statusEl.value = 'ALL';
+    if (statusEl._scadaDropdown) statusEl._scadaDropdown.sync();
+  }
   applyReportsFilter(1);
 }
 
@@ -2038,25 +2347,28 @@ async function applyReportsFilter(page = 1) {
   const dateFromEl = document.getElementById('rep-filter-date-from');
   const dateToEl = document.getElementById('rep-filter-date-to');
   const modelEl = document.getElementById('rep-filter-model');
+  const statusEl = document.getElementById('rep-filter-status');
 
   const dateFrom = dateFromEl ? dateFromEl.value : '';
   const dateTo = dateToEl ? dateToEl.value : '';
   const modelId = modelEl ? modelEl.value : 'ALL';
+  const status = statusEl ? statusEl.value : 'ALL';
 
   const tbody = document.getElementById('history-tbody');
   if (!tbody) return;
 
-  tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #64748b; padding: 24px;"><i class="ri-loader-4-line scada-spin" style="font-size: 16px; display: inline-block; vertical-align: middle; margin-right: 6px;"></i> Loading dispatch transactions...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 24px;"><i class="ri-loader-4-line scada-spin" style="font-size: 16px; display: inline-block; vertical-align: middle; margin-right: 6px;"></i> Loading dispatch transactions...</td></tr>';
 
   // Build shared filter params
   const filterParams = {};
   if (dateFrom) filterParams.dateFrom = dateFrom;
   if (dateTo) filterParams.dateTo = dateTo;
   if (modelId && modelId !== 'ALL') filterParams.modelId = modelId;
+  if (status && status !== 'ALL') filterParams.status = status;
 
   // Fetch stats/charts and history table in parallel
   const [statsRes] = await Promise.allSettled([
-    api.getFilteredReports(filterParams)
+    api.getFilteredReports({ dateFrom, dateTo, modelId })
   ]);
 
   // Update stats tiles and charts from filtered data
@@ -2108,15 +2420,66 @@ async function applyReportsFilter(page = 1) {
     if (btnNext) btnNext.disabled = _repCurrentPage >= _repTotalPages;
 
     if (!res || !res.transactions || res.transactions.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #64748b; padding: 32px;"><i class="ri-inbox-line" style="font-size: 24px; display: block; margin-bottom: 6px; color: #94a3b8;"></i> No dispatch transactions found matching filter criteria.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 32px;"><i class="ri-inbox-line" style="font-size: 24px; display: block; margin-bottom: 6px; color: #94a3b8;"></i> No dispatch transactions found matching filter criteria.</td></tr>';
       return;
     }
 
     res.transactions.forEach(tx => {
       const tr = document.createElement('tr');
-      const boxCount = (tx.allocatedBoxes && tx.allocatedBoxes.length) || 0;
+      const allocatedCount = (tx.allocatedBoxes && tx.allocatedBoxes.length) || 0;
+      const scannedCount = (tx.scannedBoxes && tx.scannedBoxes.length) || 0;
       const partCount = tx.dispatchedPartCount || 0;
-      const completedTime = tx.completedAt ? new Date(tx.completedAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'N/A';
+      const dateObj = tx.completedAt || tx.cancelledAt || tx.startedAt || tx.createdAt;
+      const timeStr = dateObj ? new Date(dateObj).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'N/A';
+
+      // Status Badge
+      let statusBadge = '';
+      if (tx.status === 'completed') {
+        statusBadge = '<span class="badge badge-success" style="font-size: 9.5px; padding: 2px 7px; font-weight: 700;">COMPLETED</span>';
+      } else if (tx.status === 'cancelled') {
+        statusBadge = `<span class="badge badge-danger" style="font-size: 9.5px; padding: 2px 7px; font-weight: 700;" title="${tx.cancellationReason || 'Cancelled'}">CANCELLED</span>`;
+      } else if (tx.status === 'stale') {
+        statusBadge = `<span class="badge" style="background: #fffbeb; color: #b45309; border: 1px solid #fde68a; font-size: 9.5px; padding: 2px 7px; font-weight: 700;" title="${tx.cancellationReason || 'Aborted / Stale'}">FAILED / STALE</span>`;
+      } else {
+        statusBadge = `<span class="badge" style="font-size: 9.5px; padding: 2px 7px;">${(tx.status || '').toUpperCase()}</span>`;
+      }
+
+      // Progress display
+      let progressDisplay = '';
+      if (tx.status === 'completed') {
+        progressDisplay = `${allocatedCount} Boxes`;
+      } else {
+        progressDisplay = `<span style="font-family: var(--font-mono); font-size: 11px;">${scannedCount} / ${allocatedCount} Scanned</span>`;
+      }
+
+      // Parts display
+      const partsDisplay = tx.status === 'completed'
+        ? `<strong>${partCount.toLocaleString()} Parts</strong>`
+        : `<span style="color: var(--text-secondary); font-size: 11px;">${partCount} Target Parts</span>`;
+
+      // Actions Column
+      let actionsHtml = '';
+      if (tx.status === 'completed') {
+        actionsHtml = `
+          <div style="display: flex; gap: 4px; justify-content: flex-end;">
+            <button class="btn-scada btn-secondary" style="padding: 2px 8px; font-size: 10.5px; height: 26px;" onclick="showDispatchDetails('${tx.dispatchId}')" title="View Transaction Details & Remarks">
+              <i class="ri-information-line"></i> DETAILS
+            </button>
+            <button class="btn-scada btn-secondary" style="padding: 2px 8px; font-size: 10.5px; height: 26px;" onclick="openDispatchBill('${tx.dispatchId}')" title="View Dispatch Manifest & Advice Note">
+              <i class="ri-file-text-line"></i> MANIFEST
+            </button>
+          </div>
+        `;
+      } else {
+        // Unsuccessful transactions (cancelled or stale/aborted) cannot have a manifest
+        actionsHtml = `
+          <div style="display: flex; gap: 4px; justify-content: flex-end;">
+            <button class="btn-scada btn-secondary" style="padding: 2px 8px; font-size: 10.5px; height: 26px;" onclick="showDispatchDetails('${tx.dispatchId}')" title="View Reason & Audit Details">
+              <i class="ri-information-line"></i> DETAILS
+            </button>
+          </div>
+        `;
+      }
 
       tr.innerHTML = `
         <td>
@@ -2125,24 +2488,173 @@ async function applyReportsFilter(page = 1) {
             <i class="ri-file-copy-line" style="font-size: 11px; opacity: 0.6; color: var(--color-primary);"></i>
           </span>
         </td>
-        <td style="font-family: var(--font-mono); font-size: 11px;">${completedTime}</td>
+        <td style="font-family: var(--font-mono); font-size: 11px;">${timeStr}</td>
+        <td>${statusBadge}</td>
         <td><strong>${tx.modelId}</strong></td>
-        <td>${boxCount} Boxes</td>
-        <td><strong>${partCount.toLocaleString()} Parts</strong></td>
-        <td style="color: var(--text-secondary);">${tx.operatorUsername || '--'}</td>
-        <td style="text-align: right;">
-          <button class="btn-scada btn-secondary" style="padding: 2px 10px; font-size: 11px; height: 26px;" onclick="openDispatchBill('${tx.dispatchId}')" title="View Dispatch Manifest & Challan">
-            <i class="ri-file-text-line"></i> MANIFEST
-          </button>
-        </td>
+        <td>${progressDisplay}</td>
+        <td>${partsDisplay}</td>
+        <td style="color: var(--text-secondary);">${tx.operatorFullName || tx.operatorUsername || '--'}</td>
+        <td style="text-align: right;">${actionsHtml}</td>
       `;
       tbody.appendChild(tr);
     });
   } catch (err) {
     console.error('Failed to load dispatch history:', err.message);
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #dc2626; padding: 24px;">Failed to load transactions: ${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: #dc2626; padding: 24px;">Failed to load transactions: ${err.message}</td></tr>`;
   }
 }
+
+async function showDispatchDetails(dispatchId) {
+  if (window.sounds) window.sounds.playClick();
+  try {
+    const res = await api.getDispatchBill(dispatchId);
+    if (!res || !res.bill) throw new Error('Transaction details not found');
+    const b = res.bill;
+    const isCompleted = b.status === 'completed';
+    const isCancelled = b.status === 'cancelled';
+    const openedAt = b.startedAt ? new Date(b.startedAt).toLocaleString() : 'N/A';
+    const endedAt = b.completedAt ? new Date(b.completedAt).toLocaleString() : (b.cancelledAt ? new Date(b.cancelledAt).toLocaleString() : 'N/A');
+    const scannedCount = (b.scannedBoxes && b.scannedBoxes.length) || 0;
+    const totalBoxes = b.totalBoxes || (b.boxes && b.boxes.length) || 0;
+
+    const iconWrap = document.getElementById('modal-dtl-icon-wrap');
+    const iconEl = document.getElementById('modal-dtl-icon');
+    const titleEl = document.getElementById('modal-dtl-title');
+    const subtitleEl = document.getElementById('modal-dtl-subtitle');
+    const contextEl = document.getElementById('modal-dtl-context');
+    const contextIconEl = document.getElementById('modal-dtl-context-icon');
+    const dspIdEl = document.getElementById('modal-dtl-dispatch-id');
+    const badgeEl = document.getElementById('modal-dtl-status-badge');
+    const reasonLabelEl = document.getElementById('modal-dtl-reason-label');
+    const reasonEl = document.getElementById('modal-dtl-reason');
+    const termLabelEl = document.getElementById('modal-dtl-term-label');
+    const modelEl = document.getElementById('modal-dtl-model');
+    const operatorEl = document.getElementById('modal-dtl-operator');
+    const openedEl = document.getElementById('modal-dtl-opened');
+    const terminatedEl = document.getElementById('modal-dtl-terminated');
+    const progressEl = document.getElementById('modal-dtl-progress');
+    const partsEl = document.getElementById('modal-dtl-parts');
+    const btnManifest = document.getElementById('modal-dtl-btn-manifest');
+
+    if (dspIdEl) {
+      dspIdEl.textContent = b.dispatchId || dispatchId;
+    }
+    if (modelEl) {
+      modelEl.textContent = b.modelId || '--';
+    }
+    if (operatorEl) {
+      operatorEl.textContent = b.operatorFullName || b.operatorUsername || '--';
+    }
+    if (openedEl) {
+      openedEl.textContent = openedAt;
+    }
+    if (terminatedEl) {
+      terminatedEl.textContent = endedAt;
+    }
+    if (progressEl) {
+      progressEl.textContent = `${scannedCount} of ${totalBoxes} Verified`;
+    }
+    if (partsEl) {
+      partsEl.textContent = `${(b.totalParts || 0).toLocaleString()} Parts`;
+    }
+
+    if (isCompleted) {
+      // SUCCESSFUL / COMPLETED DISPATCH
+      if (iconWrap) iconWrap.className = 'custom-modal-icon-wrap icon-success';
+      if (iconEl) iconEl.className = 'ri-checkbox-circle-line';
+      if (titleEl) titleEl.textContent = 'DISPATCH TRANSACTION DETAILS';
+      if (subtitleEl) subtitleEl.innerHTML = 'Completed Successfully &bull; Outbound Dispatch Ledger';
+      if (contextEl) contextEl.style.borderLeftColor = 'var(--color-success)';
+      if (contextIconEl) contextIconEl.style.color = 'var(--color-success)';
+      if (badgeEl) {
+        badgeEl.className = 'badge badge-success';
+        badgeEl.textContent = 'COMPLETED';
+      }
+      if (reasonLabelEl) {
+        reasonLabelEl.innerHTML = '<i class="ri-chat-check-line"></i> DISPATCH COMPLETION NOTES / REMARKS';
+      }
+      if (reasonEl) {
+        if (b.notes && b.notes.trim()) {
+          reasonEl.textContent = `“${b.notes.trim()}”`;
+          reasonEl.style.color = '#0f172a';
+        } else {
+          reasonEl.innerHTML = '<span style="color: var(--text-secondary); font-style: italic; font-weight: normal;">No additional notes recorded on completion.</span>';
+          reasonEl.style.color = 'var(--text-secondary)';
+        }
+      }
+      if (termLabelEl) termLabelEl.textContent = 'COMPLETED AT';
+
+      // Successful modals CAN have manifest
+      if (btnManifest) {
+        btnManifest.style.display = 'inline-flex';
+        btnManifest.onclick = () => {
+          closeModals();
+          if (typeof openDispatchBill === 'function') {
+            openDispatchBill(b.dispatchId || dispatchId);
+          }
+        };
+      }
+    } else {
+      // UNSUCCESSFUL DISPATCH (Cancelled or Aborted / Stale)
+      if (isCancelled) {
+        if (iconWrap) iconWrap.className = 'custom-modal-icon-wrap icon-danger';
+        if (iconEl) iconEl.className = 'ri-close-circle-line';
+        if (titleEl) titleEl.textContent = 'DISPATCH TRANSACTION AUDIT';
+        if (subtitleEl) subtitleEl.innerHTML = 'Cancelled by Operator &bull; Shop-Floor Governance Ledger';
+        if (contextEl) contextEl.style.borderLeftColor = 'var(--color-danger)';
+        if (contextIconEl) contextIconEl.style.color = 'var(--color-danger)';
+        if (badgeEl) {
+          badgeEl.className = 'badge badge-danger';
+          badgeEl.textContent = 'CANCELLED';
+        }
+        if (reasonLabelEl) {
+          reasonLabelEl.innerHTML = '<i class="ri-information-line"></i> REASON FOR CANCELLATION / ABORT';
+        }
+        if (reasonEl) {
+          const reasonText = b.cancellationReason || 'Operator cancelled session';
+          reasonEl.textContent = `“${reasonText}”`;
+          reasonEl.style.color = '#b91c1c';
+        }
+      } else {
+        // Stale / Aborted
+        if (iconWrap) iconWrap.className = 'custom-modal-icon-wrap icon-warning';
+        if (iconEl) iconEl.className = 'ri-error-warning-line';
+        if (titleEl) titleEl.textContent = 'DISPATCH TRANSACTION AUDIT';
+        if (subtitleEl) subtitleEl.innerHTML = 'Aborted / Stale Session &bull; Shop-Floor Governance Ledger';
+        if (contextEl) contextEl.style.borderLeftColor = 'var(--color-warning)';
+        if (contextIconEl) contextIconEl.style.color = 'var(--color-warning)';
+        if (badgeEl) {
+          badgeEl.className = 'badge badge-hold';
+          badgeEl.textContent = (b.status || 'STALE').toUpperCase();
+        }
+        if (reasonLabelEl) {
+          reasonLabelEl.innerHTML = '<i class="ri-information-line"></i> REASON FOR CANCELLATION / ABORT';
+        }
+        if (reasonEl) {
+          const reasonText = b.cancellationReason || 'Application closed or restarted before transaction was completed';
+          reasonEl.textContent = `“${reasonText}”`;
+          reasonEl.style.color = '#b45309';
+        }
+      }
+      if (termLabelEl) termLabelEl.textContent = 'TERMINATED AT';
+
+      // Unsuccessful modals CANNOT have manifest
+      if (btnManifest) {
+        btnManifest.style.display = 'none';
+      }
+    }
+
+    openModal('modal-dispatch-details');
+  } catch (err) {
+    console.error('Failed to load transaction details:', err);
+    if (window.customModal) {
+      customModal.alert('Could not load transaction details: ' + err.message, { title: 'ERROR', type: 'danger' });
+    }
+  }
+}
+window.showDispatchDetails = showDispatchDetails;
+window.showAbortedDispatchDetails = showDispatchDetails;
+
 
 async function exportInventoryCsv() {
   if (window.sounds) window.sounds.playClick();
@@ -2385,12 +2897,18 @@ async function exportCsvReport() {
   try {
     const dateFrom = document.getElementById('rep-filter-date-from')?.value || '';
     const dateTo = document.getElementById('rep-filter-date-to')?.value || '';
+    const modelId = document.getElementById('rep-filter-model')?.value || 'ALL';
+    const status = document.getElementById('rep-filter-status')?.value || 'ALL';
+
     const params = new URLSearchParams();
     if (dateFrom) params.append('dateFrom', dateFrom);
     if (dateTo) params.append('dateTo', dateTo);
+    if (modelId && modelId !== 'ALL') params.append('modelId', modelId);
+    if (status && status !== 'ALL') params.append('status', status);
 
     const qs = params.toString();
     const url = `/api/reports/export-csv${qs ? `?${qs}` : ''}`;
+
     const res = await fetch(url, {
       headers: {
         'Authorization': `Bearer ${api.token}`
@@ -2421,6 +2939,225 @@ async function exportCsvReport() {
 // ============================================================================
 // DETAILED DISPATCH BILL / DELIVERY CHALLAN VIEW & PDF PRINT
 // ============================================================================
+// ─── MANIFEST SHARED STYLES ──────────────────────────────────────────────────
+const MANIFEST_CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Inter',Arial,sans-serif;background:#fff;color:#0f172a;font-size:9pt;line-height:1.5;}
+  .doc-wrap{max-width:794px;margin:0 auto;padding:32px 36px 40px;}
+  /* Header band */
+  .doc-header-band{background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%);padding:18px 28px;display:flex;justify-content:space-between;align-items:center;border-radius:4px 4px 0 0;}
+  .doc-header-title{color:#fff;}
+  .doc-header-title h1{font-size:16pt;font-weight:800;letter-spacing:0.5px;margin-bottom:2px;}
+  .doc-header-title .doc-id{font-size:10pt;font-weight:600;color:#7dd3fc;letter-spacing:0.5px;font-family:monospace;}
+  .doc-header-logo{height:42px;max-width:160px;object-fit:contain;}
+  /* Status bar */
+  .doc-status-bar{padding:6px 28px;font-size:8pt;font-weight:700;letter-spacing:1.5px;display:flex;align-items:center;gap:8px;}
+  .doc-status-bar.completed{background:#022c22;color:#6ee7b7;}
+  .doc-status-bar.in-progress{background:#431407;color:#fdba74;}
+  .doc-status-dot{width:6px;height:6px;border-radius:50%;display:inline-block;}
+  .doc-status-bar.completed .doc-status-dot{background:#10b981;}
+  .doc-status-bar.in-progress .doc-status-dot{background:#f97316;animation:pulse-dot 1s ease-in-out infinite alternate;}
+  @keyframes pulse-dot{from{opacity:0.4}to{opacity:1}}
+  /* Meta grid */
+  .doc-meta{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 4px 4px;margin-bottom:24px;}
+  .doc-meta-col{padding:14px 20px;}
+  .doc-meta-col:first-child{border-right:1px solid #e2e8f0;}
+  .doc-meta-row{display:flex;gap:6px;padding:3px 0;font-size:9pt;}
+  .doc-meta-label{color:#64748b;font-weight:600;min-width:105px;flex-shrink:0;}
+  .doc-meta-value{color:#0f172a;font-weight:500;word-break:break-word;min-width:0;}
+  .doc-meta-value.highlight{color:#0284c7;font-weight:700;}
+  /* Section heading */
+  .doc-section-heading{font-size:9pt;font-weight:800;letter-spacing:1.5px;color:#334155;text-transform:uppercase;border-bottom:2px solid #0284c7;padding-bottom:5px;margin-bottom:12px;display:flex;align-items:center;gap:8px;}
+  .doc-section-heading::before{content:'';display:inline-block;width:4px;height:14px;background:#0284c7;border-radius:2px;}
+  /* Box table */
+  .doc-table{width:100%;border-collapse:collapse;font-size:9pt;margin-bottom:24px;}
+  .doc-table thead tr{background:#0f172a;color:#fff;}
+  .doc-table th{padding:8px 10px;font-weight:700;letter-spacing:0.5px;font-size:8pt;text-transform:uppercase;}
+  .doc-table th:first-child{border-radius:0;}
+  .doc-table td{padding:8px 10px;border-bottom:1px solid #f1f5f9;vertical-align:middle;}
+  .doc-table tr:nth-child(even) td{background:#f8fafc;}
+  .doc-table tr.serial-row td{background:#f1f5f9;padding:6px 14px;}
+  .doc-table .box-id{color:#0284c7;font-weight:700;font-family:monospace;}
+  .doc-table .parts-val{font-weight:700;text-align:center;}
+  .doc-table .status-cell{text-align:center;}
+  .badge-verified{display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#15803d;border:1px solid #86efac;padding:2px 9px;border-radius:20px;font-size:7.5pt;font-weight:700;letter-spacing:0.5px;}
+  .badge-pending{display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#b45309;border:1px solid #fcd34d;padding:2px 9px;border-radius:20px;font-size:7.5pt;font-weight:700;letter-spacing:0.5px;}
+  /* Serials */
+  .serial-grid{display:flex;flex-wrap:wrap;gap:3px;}
+  .serial-chip{background:#fff;border:1px solid #cbd5e1;padding:2px 6px;border-radius:3px;font-size:7.5pt;font-family:monospace;color:#334155;}
+  /* Signatures */
+  .doc-signatures{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:40px;padding-top:30px;border-top:1px solid #e2e8f0;}
+  .doc-sig-block{text-align:center;}
+  .doc-sig-line{height:1px;background:#0f172a;margin-bottom:6px;}
+  .doc-sig-label{font-size:8pt;font-weight:700;color:#334155;letter-spacing:0.5px;text-transform:uppercase;}
+  .doc-sig-name{font-size:8pt;color:#64748b;margin-top:2px;}
+  /* Footer */
+  .doc-footer{margin-top:24px;padding-top:12px;border-top:1px solid #f1f5f9;display:flex;justify-content:space-between;font-size:7.5pt;color:#94a3b8;}
+  @media print{body{print-color-adjust:exact;-webkit-print-color-adjust:exact;}button{display:none!important;}}
+`;
+
+/**
+ * Builds premium enterprise manifest HTML (both completed and pending share this).
+ * @param {object} opts
+ */
+function buildManifestHTML({ title, docId, status, isCompleted, meta, boxes, includeSerials, operatorName, logoDataUrl }) {
+  const logoSrc = logoDataUrl || '';
+
+  const fmtDate = d => d ? new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '--';
+
+  const statusBarClass = isCompleted ? 'completed' : 'in-progress';
+  const statusText = isCompleted ? 'VERIFIED & DISPATCHED' : 'SCANNING IN PROGRESS — DRAFT';
+
+  const tableRows = boxes.map((b, idx) => {
+    const verified = b.verified !== false; // default to true for completed
+    const badge = (isCompleted || verified)
+      ? `<span class="badge-verified">&#10003; VERIFIED</span>`
+      : `<span class="badge-pending">&#9679; PENDING SCAN</span>`;
+    const rowBg = (!isCompleted && !verified) ? '' : '';
+
+    let serialRow = '';
+    if (includeSerials && b.serialNumbers && b.serialNumbers.length > 0) {
+      const chips = b.serialNumbers.map(s => `<span class="serial-chip">${s}</span>`).join('');
+      serialRow = `<tr class="serial-row"><td colspan="5"><div class="serial-grid">${chips}</div></td></tr>`;
+    }
+
+    const dateStr = b.closedAt ? new Date(b.closedAt).toISOString().slice(0, 16).replace('T', ' ') : '--';
+    return `
+      <tr>
+        <td style="color:#64748b;font-weight:600;">${idx + 1}</td>
+        <td class="box-id">BOX-${b.batchNumber}</td>
+        <td>${dateStr}</td>
+        <td class="parts-val">${b.completedCount} PCS</td>
+        <td class="status-cell">${badge}</td>
+      </tr>
+      ${serialRow}`;
+  }).join('');
+
+  const metaRows = meta.map(([label, value, hl]) =>
+    `<div class="doc-meta-row"><span class="doc-meta-label">${label}</span><span class="doc-meta-value${hl ? ' highlight' : ''}">${value}</span></div>`
+  ).join('');
+
+  const [col1Meta, col2Meta] = [meta.slice(0, Math.ceil(meta.length / 2)), meta.slice(Math.ceil(meta.length / 2))];
+
+  const col1Html = col1Meta.map(([label, value, hl]) =>
+    `<div class="doc-meta-row"><span class="doc-meta-label">${label}</span><span class="doc-meta-value${hl ? ' highlight' : ''}">${value}</span></div>`
+  ).join('');
+
+  const col2Html = col2Meta.map(([label, value, hl]) =>
+    `<div class="doc-meta-row"><span class="doc-meta-label">${label}</span><span class="doc-meta-value${hl ? ' highlight' : ''}">${value}</span></div>`
+  ).join('');
+
+  const printedAt = new Date().toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>${title}</title>
+<style>${MANIFEST_CSS}</style>
+</head>
+<body>
+<div class="doc-wrap">
+  <div class="doc-header-band">
+    <div class="doc-header-title">
+      <h1>${title}</h1>
+      <div class="doc-id">${docId}</div>
+    </div>
+    <img src="${logoSrc}" class="doc-header-logo" alt="Customer Logo">
+  </div>
+  <div class="doc-status-bar ${statusBarClass}">
+    <span class="doc-status-dot"></span>
+    ${statusText}
+  </div>
+  <div class="doc-meta">
+    <div class="doc-meta-col">${col1Html}</div>
+    <div class="doc-meta-col">${col2Html}</div>
+  </div>
+
+  <div class="doc-section-heading">Box Allocation &amp; Verification Ledger</div>
+  <table class="doc-table">
+    <thead>
+      <tr>
+        <th style="width:40px;">#</th>
+        <th>Box / Batch ID</th>
+        <th>Produced At</th>
+        <th style="text-align:center;">Parts (PCS)</th>
+        <th style="text-align:center;">Status</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+
+  <div class="doc-signatures">
+    <div class="doc-sig-block">
+      <div class="doc-sig-line"></div>
+      <div class="doc-sig-label">Prepared By (Operator)</div>
+      <div class="doc-sig-name">${operatorName || ''}</div>
+    </div>
+    <div class="doc-sig-block">
+      <div class="doc-sig-line"></div>
+      <div class="doc-sig-label">Authorized By (Dispatch In-Charge)</div>
+    </div>
+  </div>
+
+  <div class="doc-footer">
+    <span>Document generated: ${printedAt}</span>
+    <span>RecordKeeper Dispatch</span>
+  </div>
+</div>
+</body>
+</html>`;
+}
+
+/**
+ * Fetch the customer logo as a base64 data URL so it embeds cleanly in
+ * standalone HTML pages (about:blank new windows, Electron temp-file PDFs).
+ */
+async function fetchLogoDataUrl() {
+  try {
+    const origin = (window.electronAPI?.isElectron)
+      ? `http://127.0.0.1:${window.electronAPI?.serverPort || 4000}`
+      : window.location.origin;
+    const resp = await fetch(`${origin}/assets/logo-right.png`);
+    if (!resp.ok) return '';
+    const blob = await resp.blob();
+    return await new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(blob);
+    });
+  } catch { return ''; }
+}
+
+/**
+ * Export HTML to PDF. In Electron uses native IPC (no dialog).
+ * In browser, opens a new tab with a print button.
+ */
+async function exportToPDF(html, filename) {
+  if (window.electronAPI && typeof window.electronAPI.printToPDF === 'function') {
+    try {
+      await window.electronAPI.printToPDF(html, filename);
+    } catch (err) {
+      await customModal.alert('PDF export failed: ' + err.message, { title: 'PDF ERROR', type: 'danger' });
+    }
+  } else {
+    // Web fallback — open in new tab with a print button
+    const win = window.open('', '_blank', 'width=900,height=720');
+    if (!win) { await customModal.alert('Popup blocked. Please allow popups for this site.', { title: 'POPUP BLOCKED', type: 'warning' }); return; }
+    // Inject print button into the HTML
+    const btnHtml = `<div style="position:fixed;top:12px;right:16px;z-index:9999;display:flex;gap:8px;">
+      <button onclick="window.print()" style="background:#0284c7;color:#fff;border:none;border-radius:6px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">&#128438; Save as PDF</button>
+      <button onclick="window.close()" style="background:#64748b;color:#fff;border:none;border-radius:6px;padding:8px 14px;font-weight:700;font-size:12px;cursor:pointer;">&#10005;</button>
+    </div>`;
+    const withBtn = html.replace('</body>', btnHtml + '</body>');
+    win.document.write(withBtn);
+    win.document.close();
+  }
+}
+
+// ─── COMPLETED DISPATCH MANIFEST ─────────────────────────────────────────────
 async function openDispatchBill(dispatchId) {
   try {
     const res = await api.getDispatchBill(dispatchId);
@@ -2431,37 +3168,56 @@ async function openDispatchBill(dispatchId) {
     document.getElementById('bill-model-name').textContent = `${bill.modelId} (${bill.modelName})`;
     document.getElementById('bill-customer-part').textContent = bill.customerPartNo;
     document.getElementById('bill-internal-part').textContent = bill.internalPartId;
-    document.getElementById('bill-rev-info').textContent = `REV: ${bill.productRevNo} / SW: ${bill.softwareRevNo}`;
-    document.getElementById('bill-operator').textContent = bill.operatorUsername;
+    document.getElementById('bill-operator').textContent = bill.operatorFullName || bill.operatorUsername;
     document.getElementById('bill-totals').textContent = `${bill.totalBoxes} Boxes / ${bill.totalParts} Total Parts`;
 
-    // Render Box & Serial breakdown
+    // Reset serial toggle
+    const toggle = document.getElementById('bill-serial-toggle');
+    if (toggle) toggle.checked = false;
+
+    // Store bill for later use by save PDF button
+    window._currentBill = bill;
+
+    // Render boxes table
     const container = document.getElementById('bill-boxes-container');
     container.innerHTML = '';
+    const table = document.createElement('table');
+    table.style.cssText = 'width:100%;border-collapse:collapse;font-size:9.5pt;';
+    table.innerHTML = `
+      <thead><tr style="background:#0f172a;color:#fff;">
+        <th style="padding:7px 10px;text-align:left;font-size:8pt;letter-spacing:0.5px;width:40px;">#</th>
+        <th style="padding:7px 10px;text-align:left;font-size:8pt;letter-spacing:0.5px;">BOX / BATCH</th>
+        <th style="padding:7px 10px;text-align:left;font-size:8pt;letter-spacing:0.5px;">PRODUCED AT</th>
+        <th style="padding:7px 10px;text-align:center;font-size:8pt;letter-spacing:0.5px;">PARTS</th>
+        <th style="padding:7px 10px;text-align:center;font-size:8pt;letter-spacing:0.5px;">STATUS</th>
+      </tr></thead>
+      <tbody id="bill-boxes-tbody"></tbody>`;
+    container.appendChild(table);
 
+    const tbody = table.querySelector('#bill-boxes-tbody');
     bill.boxes.forEach((b, idx) => {
-      const boxCard = document.createElement('div');
-      boxCard.style.border = '1px solid #cbd5e1';
-      boxCard.style.padding = '8px';
-      boxCard.style.marginBottom = '8px';
-      boxCard.style.background = '#f8fafc';
-      boxCard.style.color = '#000';
+      const hasSerials = b.serialNumbers && b.serialNumbers.length > 0;
+      const statusBadge = `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#15803d;border:1px solid #86efac;padding:2px 9px;border-radius:20px;font-size:7.5pt;font-weight:700;">&#10003; VERIFIED</span>`;
+      const tr = document.createElement('tr');
+      tr.style.background = idx % 2 === 1 ? '#f8fafc' : '';
+      tr.innerHTML = `
+        <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;color:#64748b;font-weight:600;">${idx + 1}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;color:#0284c7;font-weight:700;font-family:monospace;">BOX-${b.batchNumber}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;">${new Date(b.closedAt).toISOString().slice(0, 16).replace('T', ' ')}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;text-align:center;font-weight:700;">${b.completedCount} PCS</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;text-align:center;">${statusBadge}</td>`;
+      tbody.appendChild(tr);
 
-      const serialsList = (b.serialNumbers || []).join(', ');
-
-      boxCard.innerHTML = `
-        <div style="display: flex; justify-content: space-between; font-weight: bold; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;">
-          <span>${idx + 1}. BOX #${b.batchNumber} (Quantity: ${b.completedCount} Pcs)</span>
-          <span>Produced: ${new Date(b.closedAt).toISOString().slice(0, 16).replace('T', ' ')}</span>
-        </div>
-        <div style="font-size: 9pt; margin-top: 4px; color: #475569;">
-          <strong>Batch QR:</strong> ${b.batchQrData}
-        </div>
-        <div style="font-size: 8pt; margin-top: 4px; color: #1e293b; max-height: 80px; overflow-y: auto; word-break: break-all;">
-          <strong>Serials (${b.serialNumbers ? b.serialNumbers.length : 0}):</strong> ${serialsList || 'No individual serials recorded'}
-        </div>
-      `;
-      container.appendChild(boxCard);
+      if (hasSerials) {
+        const serialTr = document.createElement('tr');
+        serialTr.className = 'bill-serial-row';
+        serialTr.style.cssText = 'display:none;background:#f8fafc;';
+        const chips = b.serialNumbers.map(s =>
+          `<span style="display:inline-block;background:#fff;border:1px solid #cbd5e1;padding:2px 6px;border-radius:3px;font-size:7.5pt;font-family:monospace;color:#334155;margin:2px;">${s}</span>`
+        ).join('');
+        serialTr.innerHTML = `<td colspan="5" style="padding:8px 14px;border-bottom:1px solid #f1f5f9;">${chips}</td>`;
+        tbody.appendChild(serialTr);
+      }
     });
 
     openModal('modal-dispatch-bill');
@@ -2470,9 +3226,100 @@ async function openDispatchBill(dispatchId) {
   }
 }
 
-function printDispatchBill() {
-  window.print();
+function toggleManifestSerials() {
+  const show = document.getElementById('bill-serial-toggle')?.checked;
+  document.querySelectorAll('.bill-serial-row').forEach(row => {
+    row.style.display = show ? 'table-row' : 'none';
+  });
 }
+
+async function printDispatchBill() {
+  const bill = window._currentBill;
+  if (!bill) return;
+  const includeSerials = document.getElementById('bill-serial-toggle')?.checked;
+  const operatorName = bill.operatorFullName || bill.operatorUsername;
+
+  const [logoDataUrl] = await Promise.all([fetchLogoDataUrl()]);
+
+  const meta = [
+    ['Dispatch Date:', new Date(bill.completedAt || bill.startedAt).toLocaleString()],
+    ['Model / Product:', `${bill.modelId} (${bill.modelName})`],
+    ['Customer Part No:', bill.customerPartNo],
+    ['Internal Part ID:', bill.internalPartId],
+    ['Dispatched By:', operatorName],
+    ['Total Dispatched:', `${bill.totalBoxes} Boxes / ${bill.totalParts} Parts`, true],
+  ];
+
+  const html = buildManifestHTML({
+    title: 'DISPATCH MANIFEST',
+    docId: bill.dispatchId,
+    status: bill.status,
+    isCompleted: true,
+    meta,
+    boxes: bill.boxes.map(b => ({ ...b, verified: true })),
+    includeSerials,
+    operatorName,
+    logoDataUrl
+  });
+
+  await exportToPDF(html, `Dispatch-Manifest-${bill.dispatchId}.pdf`);
+}
+
+// ─── PENDING DISPATCH MANIFEST ────────────────────────────────────────────────
+async function printPendingManifest() {
+  const tbody = document.getElementById('fifo-pick-tbody');
+  if (!tbody || !tbody.querySelector('tr[data-box-id]')) {
+    await customModal.alert('No active dispatch session to print.', { title: 'NO ACTIVE SESSION', type: 'warning' });
+    return;
+  }
+
+  const orderId = document.getElementById('active-tx-id')?.textContent || '--';
+  const model = document.getElementById('active-tx-model')?.textContent || '--';
+  const operator = document.getElementById('active-tx-operator')?.textContent || '--';
+  const target = document.getElementById('active-tx-target')?.textContent || '--';
+
+  // Build boxes from the pick table
+  const boxes = [];
+  tbody.querySelectorAll('tr[data-box-id]').forEach(tr => {
+    const cells = tr.querySelectorAll('td');
+    if (cells.length < 5) return;
+    const isPending = !!tr.querySelector('.badge-pending');
+    const batchText = cells[1].textContent.trim().replace('BOX-', '');
+    boxes.push({
+      batchNumber: batchText,
+      closedAt: cells[2].textContent.trim(),
+      completedCount: parseInt(cells[3].textContent) || 0,
+      serialNumbers: [],
+      verified: !isPending
+    });
+  });
+
+  const meta = [
+    ['Printed At:', new Date().toLocaleString()],
+    ['Model:', model],
+    ['Target Quantity:', target],
+    ['Operator:', operator],
+    ['Order Reference:', orderId],
+    ['Status:', 'SCANNING IN PROGRESS — DRAFT', true],
+  ];
+
+  const logoDataUrl = await fetchLogoDataUrl();
+
+  const html = buildManifestHTML({
+    title: 'PENDING DISPATCH NOTE',
+    docId: orderId,
+    status: 'in_progress',
+    isCompleted: false,
+    meta,
+    boxes,
+    includeSerials: false,
+    operatorName: operator,
+    logoDataUrl
+  });
+
+  await exportToPDF(html, `Pending-Dispatch-Note-${orderId}.pdf`);
+}
+
 
 // ============================================================================
 // VIEW 6: SYSTEM & USERS (MGR / ADMIN)
@@ -3622,4 +4469,7 @@ window.handleCancelDispatch = handleCancelDispatch;
 window.submitCancelDispatchModal = submitCancelDispatchModal;
 window.exportCsvReport = exportCsvReport;
 window.openDispatchBill = openDispatchBill;
+window.printDispatchBill = printDispatchBill;
+window.printPendingManifest = printPendingManifest;
+window.toggleManifestSerials = toggleManifestSerials;
 window.toggleUserDropdown = toggleUserDropdown;

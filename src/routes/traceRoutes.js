@@ -8,20 +8,26 @@ const { authenticate } = require('../middleware/authMiddleware');
 router.get('/:query', authenticate, async (req, res) => {
     try {
         const query = req.params.query.trim();
-        const num = parseInt(query, 10);
+        // Support searching by raw input, as well as stripped "BOX #1001", "#1001", "BOX 1001"
+        const cleanBoxStr = query.replace(/^(BOX\s*#?|#)\s*/i, '').trim();
+        const num = /^\d+$/.test(cleanBoxStr) ? parseInt(cleanBoxStr, 10) : null;
 
-        const filter = {
-            $or: [
-                { batchQrData: query },
-                { serialNumbers: query }
-            ]
-        };
+        const orConditions = [
+            { batchQrData: query },
+            { serialNumbers: query }
+        ];
 
-        if (!isNaN(num)) {
-            filter.$or.push({ batchNumber: num });
+        if (cleanBoxStr && cleanBoxStr !== query) {
+            orConditions.push({ batchQrData: cleanBoxStr });
+            orConditions.push({ serialNumbers: cleanBoxStr });
         }
 
-        const box = await DispatchBox.findOne(filter);
+        if (num !== null) {
+            orConditions.push({ batchNumber: num });
+        }
+
+        const box = await DispatchBox.findOne({ $or: orConditions });
+
         if (!box) {
             return res.status(404).json({
                 success: false,

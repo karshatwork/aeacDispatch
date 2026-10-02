@@ -1,7 +1,7 @@
 // src/routes/dispatchRoutes.js
 const express = require('express');
 const router = express.Router();
-const { DispatchTransaction, ProductModel, SystemSettings } = require('../models');
+const { DispatchTransaction, ProductModel, SystemSettings, DispatchUser } = require('../models');
 const { authenticate } = require('../middleware/authMiddleware');
 const fifoService = require('../services/fifoService');
 
@@ -27,7 +27,8 @@ router.post('/plan', authenticate, async (req, res) => {
             modelId,
             targetType,
             targetQuantity: parseInt(targetQuantity, 10),
-            operatorUsername: req.user.username
+            operatorUsername: req.user.username,
+            operatorFullName: req.user.fullName || req.user.username
         });
         res.json({ success: true, ...result });
     } catch (err) {
@@ -105,6 +106,13 @@ router.get('/bill/:id', authenticate, async (req, res) => {
             customerName: 'Mahindra'
         };
 
+        // Resolve operator full name: use stored value first, fall back to DB lookup
+        let operatorFullName = tx.operatorFullName || '';
+        if (!operatorFullName && tx.operatorUsername) {
+            const opUser = await DispatchUser.findOne({ username: tx.operatorUsername }).select('fullName').lean();
+            operatorFullName = opUser?.fullName || tx.operatorUsername;
+        }
+
         res.json({
             success: true,
             bill: {
@@ -113,6 +121,7 @@ router.get('/bill/:id', authenticate, async (req, res) => {
                 startedAt: tx.startedAt,
                 completedAt: tx.completedAt,
                 operatorUsername: tx.operatorUsername,
+                operatorFullName,
                 modelId: tx.modelId,
                 modelName: model.modelName,
                 customerPartNo: model.customerPartNo,
@@ -124,6 +133,9 @@ router.get('/bill/:id', authenticate, async (req, res) => {
                 totalBoxes: tx.allocatedBoxes.length,
                 totalParts: tx.dispatchedPartCount,
                 notes: tx.notes || '',
+                cancelledAt: tx.cancelledAt,
+                cancellationReason: tx.cancellationReason,
+                scannedBoxes: tx.scannedBoxes || [],
                 boxes: tx.allocatedBoxes.map(b => ({
                     boxId: b.boxId,
                     batchNumber: b.batchNumber,
@@ -134,6 +146,7 @@ router.get('/bill/:id', authenticate, async (req, res) => {
                 }))
             }
         });
+
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }

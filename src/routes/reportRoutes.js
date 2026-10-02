@@ -1,7 +1,7 @@
 // src/routes/reportRoutes.js
 const express = require('express');
 const router = express.Router();
-const { DispatchTransaction, DispatchBox } = require('../models');
+const { DispatchTransaction, DispatchBox, DispatchUser } = require('../models');
 const { authenticate, requireRole } = require('../middleware/authMiddleware');
 
 // GET /api/reports/monthly - Summary metrics & chart data (supports optional dateFrom/dateTo/modelId filters)
@@ -107,6 +107,16 @@ router.get('/monthly', authenticate, requireRole('supervisor'), async (req, res)
         const modelDataBoxes = Object.values(modelBoxMap);
         const modelDataParts = modelLabels.map(k => modelPartsMap[k] || 0);
 
+        // Cancelled & Stale (failed/abandoned) transactions in range
+        const cancelledTxs = await DispatchTransaction.countDocuments({
+            status: 'cancelled',
+            $or: [{ cancelledAt: { $gte: rangeStart, $lte: rangeEnd } }, { startedAt: { $gte: rangeStart, $lte: rangeEnd } }]
+        });
+        const staleTxs = await DispatchTransaction.countDocuments({
+            status: 'stale',
+            $or: [{ cancelledAt: { $gte: rangeStart, $lte: rangeEnd } }, { startedAt: { $gte: rangeStart, $lte: rangeEnd } }]
+        });
+
         res.json({
             success: true,
             metrics: {
@@ -115,6 +125,8 @@ router.get('/monthly', authenticate, requireRole('supervisor'), async (req, res)
                 activeHoldBoxes,
                 rejectedThisMonthBoxes: rejectedBoxes,
                 dispatchedThisMonthTxs: filteredTxs.length,
+                cancelledThisMonthTxs: cancelledTxs,
+                staleThisMonthTxs: staleTxs,
                 monthName: rangeLabel
             },
             charts: {
@@ -133,28 +145,52 @@ router.get('/monthly', authenticate, requireRole('supervisor'), async (req, res)
     }
 });
 
-// GET /api/reports/history - Historical transactions
+// GET /api/reports/history - Historical transactions (includes completed, cancelled, and stale/failed dispatches)
 router.get('/history', authenticate, requireRole('supervisor'), async (req, res) => {
     try {
-        const { dateFrom, dateTo, modelId, page = 1, limit = 20 } = req.query;
-        const filter = { status: 'completed' };
+        const { dateFrom, dateTo, modelId, status = 'ALL', page = 1, limit = 20 } = req.query;
+        const filter = {};
+
+        if (status && status !== 'ALL') {
+            filter.status = status;
+        } else {
+            filter.status = { $in: ['completed', 'cancelled', 'stale'] };
+        }
 
         if (modelId && modelId !== 'ALL') filter.modelId = modelId;
         if (dateFrom || dateTo) {
-            filter.completedAt = {};
-            if (dateFrom) filter.completedAt.$gte = new Date(dateFrom);
-            if (dateTo) filter.completedAt.$lte = new Date(new Date(dateTo).setHours(23, 59, 59, 999));
+            const start = dateFrom ? new Date(dateFrom) : new Date(0);
+            const end = dateTo ? new Date(new Date(dateTo).setHours(23, 59, 59, 999)) : new Date();
+            filter.$or = [
+                { completedAt: { $gte: start, $lte: end } },
+                { cancelledAt: { $gte: start, $lte: end } },
+                { startedAt: { $gte: start, $lte: end } }
+            ];
         }
 
         const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
         const [transactions, total] = await Promise.all([
-            DispatchTransaction.find(filter).sort({ completedAt: -1 }).skip(skip).limit(parseInt(limit, 10)),
+            DispatchTransaction.find(filter).sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit, 10)),
             DispatchTransaction.countDocuments(filter)
         ]);
 
+        // Resolve operator full names for records that don't have it stored
+        const unresolvedUsernames = [...new Set(
+            transactions.filter(tx => !tx.operatorFullName && tx.operatorUsername).map(tx => tx.operatorUsername)
+        )];
+        const userMap = {};
+        if (unresolvedUsernames.length > 0) {
+            const users = await DispatchUser.find({ username: { $in: unresolvedUsernames } }).select('username fullName').lean();
+            users.forEach(u => { if (u.username) userMap[u.username] = u.fullName; });
+        }
+        const txsWithFullName = transactions.map(tx => ({
+            ...tx.toObject(),
+            operatorFullName: tx.operatorFullName || userMap[tx.operatorUsername] || tx.operatorUsername
+        }));
+
         res.json({
             success: true,
-            transactions,
+            transactions: txsWithFullName,
             total,
             page: parseInt(page, 10),
             pages: Math.ceil(total / parseInt(limit, 10))
@@ -164,29 +200,58 @@ router.get('/history', authenticate, requireRole('supervisor'), async (req, res)
     }
 });
 
-// GET /api/reports/export-csv - Downloadable CSV report
+// GET /api/reports/export-csv - Downloadable CSV report (includes completed, cancelled, and stale/failed dispatches)
 router.get('/export-csv', authenticate, requireRole('supervisor'), async (req, res) => {
     try {
-        const { dateFrom, dateTo } = req.query;
-        const filter = { status: 'completed' };
+        const { dateFrom, dateTo, status = 'ALL', modelId } = req.query;
+        const filter = {};
 
-        if (dateFrom || dateTo) {
-            filter.completedAt = {};
-            if (dateFrom) filter.completedAt.$gte = new Date(dateFrom);
-            if (dateTo) filter.completedAt.$lte = new Date(new Date(dateTo).setHours(23, 59, 59, 999));
+        if (status && status !== 'ALL') {
+            filter.status = status;
+        } else {
+            filter.status = { $in: ['completed', 'cancelled', 'stale'] };
         }
 
-        const transactions = await DispatchTransaction.find(filter).sort({ completedAt: -1 });
+        if (modelId && modelId !== 'ALL') filter.modelId = modelId;
+
+        if (dateFrom || dateTo) {
+            const start = dateFrom ? new Date(dateFrom) : new Date(0);
+            const end = dateTo ? new Date(new Date(dateTo).setHours(23, 59, 59, 999)) : new Date();
+            filter.$or = [
+                { completedAt: { $gte: start, $lte: end } },
+                { cancelledAt: { $gte: start, $lte: end } },
+                { startedAt: { $gte: start, $lte: end } }
+            ];
+        }
+
+        const transactions = await DispatchTransaction.find(filter).sort({ createdAt: -1 });
+
+        // Resolve full names for records without stored operatorFullName
+        const unresolvedUsernames = [...new Set(
+            transactions.filter(tx => !tx.operatorFullName && tx.operatorUsername).map(tx => tx.operatorUsername)
+        )];
+        const userMap = {};
+        if (unresolvedUsernames.length > 0) {
+            const users = await DispatchUser.find({ username: { $in: unresolvedUsernames } }).select('username fullName').lean();
+            users.forEach(u => { if (u.username) userMap[u.username] = u.fullName; });
+        }
+        const resolveFullName = (tx) => tx.operatorFullName || userMap[tx.operatorUsername] || tx.operatorUsername;
 
         const csvRows = [
-            'Dispatch ID,Date,Model,Boxes Dispatched,Parts Dispatched,Operator,Box Numbers,Notes'
+            'Dispatch ID,Date,Status,Model,Target Type,Target Quantity,Boxes Allocated,Boxes Scanned,Parts Dispatched,Operator,Cancellation / Stale Reason,Box Numbers,Notes'
         ];
 
         for (const tx of transactions) {
-            const dateStr = tx.completedAt ? tx.completedAt.toISOString().slice(0, 19).replace('T', ' ') : '';
-            const boxNumbers = tx.allocatedBoxes.map(b => b.batchNumber).join(';');
-            const safeNotes = (tx.notes || '').replace(/,/g, ' ');
-            csvRows.push(`${tx.dispatchId},${dateStr},${tx.modelId},${tx.allocatedBoxes.length},${tx.dispatchedPartCount},${tx.operatorUsername},"${boxNumbers}","${safeNotes}"`);
+            const dateObj = tx.completedAt || tx.cancelledAt || tx.startedAt || tx.createdAt;
+            const dateStr = dateObj ? dateObj.toISOString().slice(0, 19).replace('T', ' ') : '';
+            const boxNumbers = (tx.allocatedBoxes || []).map(b => b.batchNumber).join(';');
+            const safeReason = (tx.cancellationReason || '').replace(/"/g, '""');
+            const safeNotes = (tx.notes || '').replace(/"/g, '""');
+            const statusUpper = (tx.status || 'unknown').toUpperCase();
+            const scannedCount = (tx.scannedBoxes || []).length;
+            const allocatedCount = (tx.allocatedBoxes || []).length;
+
+            csvRows.push(`"${tx.dispatchId}","${dateStr}","${statusUpper}","${tx.modelId}","${tx.targetType || 'boxes'}",${tx.targetQuantity || 0},${allocatedCount},${scannedCount},${tx.dispatchedPartCount || 0},"${resolveFullName(tx)}","${safeReason}","${boxNumbers}","${safeNotes}"`);
         }
 
         res.header('Content-Type', 'text/csv');
@@ -198,3 +263,4 @@ router.get('/export-csv', authenticate, requireRole('supervisor'), async (req, r
 });
 
 module.exports = router;
+

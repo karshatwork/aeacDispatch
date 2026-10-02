@@ -3,15 +3,39 @@ const express = require('express');
 const router = express.Router();
 const authService = require('../services/authService');
 const { authenticate } = require('../middleware/authMiddleware');
+const { autoCleanupOpenDispatches } = require('../services/fifoService');
 
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
     try {
         const { username, password } = req.body;
         const result = await authService.login(username, password);
+
+        // Auto-cleanup any dangling in_progress dispatches for this user or older than 30 mins
+        await autoCleanupOpenDispatches({
+            operatorUsername: result.user ? result.user.username : username,
+            reason: `Session closed upon fresh login by ${username}`
+        });
+
         res.json({ success: true, ...result });
     } catch (err) {
         res.status(400).json({ success: false, error: err.message });
+    }
+});
+
+// POST /api/auth/logout
+router.post('/logout', authenticate, async (req, res) => {
+    try {
+        const username = req.user && req.user.username;
+        if (username) {
+            await autoCleanupOpenDispatches({
+                operatorUsername: username,
+                reason: `Session closed upon operator logout (${username})`
+            });
+        }
+        res.json({ success: true, message: 'Logged out successfully' });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
@@ -32,3 +56,4 @@ router.get('/profile', authenticate, async (req, res) => {
 });
 
 module.exports = router;
+

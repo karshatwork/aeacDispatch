@@ -5,6 +5,91 @@ const { DispatchBox, ProductModel, BoxLifecycleEvent } = require('../models');
 const { authenticate, requireRole } = require('../middleware/authMiddleware');
 const { generateId } = require('../utils/idGenerator');
 
+// Escape special regex characters to prevent MongoDB regex compilation crashes or unexpected operator matching
+function escapeRegex(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Smart search filter for Box Inventory (QR codes, Box #, Serials, IDs, Remarks)
+function buildSearchFilter(search) {
+    if (!search) return null;
+    const raw = search.trim();
+    if (!raw) return null;
+
+    const orConditions = [];
+
+    // 1. Full QR Code Handling (exact and asterisk-normalized)
+    const strippedAsterisks = raw.replace(/^\*+|\*+$/g, '').trim();
+    const wrappedAsterisks = `*${strippedAsterisks}*`;
+
+    orConditions.push({ batchQrData: raw });
+    if (strippedAsterisks !== raw) {
+        orConditions.push({ batchQrData: strippedAsterisks });
+        orConditions.push({ batchQrData: wrappedAsterisks });
+    }
+
+    // 2. Safe Escaped Regex Substring on batchQrData
+    const escaped = escapeRegex(raw);
+    const escapedStripped = escapeRegex(strippedAsterisks);
+    orConditions.push({ batchQrData: { $regex: escaped, $options: 'i' } });
+    if (escapedStripped !== escaped) {
+        orConditions.push({ batchQrData: { $regex: escapedStripped, $options: 'i' } });
+    }
+
+    // 3. QR Code payload decomposition if pipes (|) are present:
+    // e.g. *DEFAULT|M001|1001* or DEFAULT|M001|1001 or SUP01|MD-X100|1A(101)
+    if (strippedAsterisks.includes('|')) {
+        const parts = strippedAsterisks.split('|').map(p => p.trim());
+        const lastPart = parts[parts.length - 1];
+        const numMatch = lastPart.match(/\d+/);
+        if (numMatch) {
+            const parsedNum = parseInt(numMatch[0], 10);
+            if (!isNaN(parsedNum)) {
+                const candidateModel = parts.find(p => /^[A-Za-z0-9_-]{2,15}$/.test(p) && !/^\d+$/.test(p) && p !== 'DEFAULT');
+                if (candidateModel) {
+                    orConditions.push({ modelId: candidateModel, batchNumber: parsedNum });
+                } else {
+                    orConditions.push({ batchNumber: parsedNum });
+                }
+            }
+        }
+    }
+
+    // 4. Box / Batch Number detection (e.g. "1001", "BOX #1001", "BOX 1001", "#1001")
+    const cleanBoxStr = raw.replace(/^(BOX\s*#?|#|B#|BOX-)\s*/i, '').trim();
+    if (/^\d+$/.test(cleanBoxStr)) {
+        const boxNum = parseInt(cleanBoxStr, 10);
+        if (!isNaN(boxNum)) {
+            orConditions.push({ batchNumber: boxNum });
+        }
+    }
+
+    // 5. Serial Numbers (exact or escaped regex)
+    orConditions.push({ serialNumbers: raw });
+    orConditions.push({ serialNumbers: { $regex: escaped, $options: 'i' } });
+
+    // 6. Reference IDs (Hold ID, Rejection ID, Dispatch ID)
+    orConditions.push({ holdId: { $regex: escaped, $options: 'i' } });
+    orConditions.push({ rejectionId: { $regex: escaped, $options: 'i' } });
+    orConditions.push({ dispatchId: { $regex: escaped, $options: 'i' } });
+
+    // 7. Model ID exact match if query looks like model identifier (e.g. M001)
+    if (/^[A-Za-z0-9_-]{2,15}$/.test(raw) && !/^\d+$/.test(raw) && !raw.includes('|')) {
+        orConditions.push({ modelId: { $regex: `^${escaped}$`, $options: 'i' } });
+    }
+
+    // 8. General Remarks / Reason search:
+    // Only search reason fields if the query is a descriptive keyword (not a QR code, box #, or serial)
+    if (!raw.includes('|') && !raw.includes('*') && !/^\d+$/.test(cleanBoxStr) && raw.length >= 3) {
+        orConditions.push({ holdReason: { $regex: escaped, $options: 'i' } });
+        orConditions.push({ rejectionReason: { $regex: escaped, $options: 'i' } });
+        orConditions.push({ holdRemarks: { $regex: escaped, $options: 'i' } });
+        orConditions.push({ rejectionRemarks: { $regex: escaped, $options: 'i' } });
+    }
+
+    return orConditions.length > 0 ? { $or: orConditions } : null;
+}
+
 // GET /api/boxes - Query box inventory with multi-filtering
 router.get('/', authenticate, async (req, res) => {
     try {
@@ -21,21 +106,8 @@ router.get('/', authenticate, async (req, res) => {
         }
 
         if (search) {
-            const trimmed = search.trim();
-            const num = parseInt(trimmed, 10);
-            const searchConditions = [
-                { batchQrData: { $regex: trimmed, $options: 'i' } },
-                { serialNumbers: { $regex: trimmed, $options: 'i' } },
-                { holdId: { $regex: trimmed, $options: 'i' } },
-                { rejectionId: { $regex: trimmed, $options: 'i' } },
-                { dispatchId: { $regex: trimmed, $options: 'i' } },
-                { holdReason: { $regex: trimmed, $options: 'i' } },
-                { rejectionReason: { $regex: trimmed, $options: 'i' } }
-            ];
-            if (!isNaN(num) && String(num) === trimmed) {
-                searchConditions.push({ batchNumber: num });
-            }
-            filter.$or = searchConditions;
+            const searchFilter = buildSearchFilter(search);
+            if (searchFilter) Object.assign(filter, searchFilter);
         }
 
         const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
@@ -116,17 +188,8 @@ router.get('/export-csv', authenticate, requireRole('supervisor'), async (req, r
         }
 
         if (search) {
-            const trimmed = search.trim();
-            const num = parseInt(trimmed, 10);
-            const searchConditions = [
-                { batchQrData: { $regex: trimmed, $options: 'i' } },
-                { serialNumbers: { $regex: trimmed, $options: 'i' } },
-                { holdId: { $regex: trimmed, $options: 'i' } },
-                { rejectionId: { $regex: trimmed, $options: 'i' } },
-                { dispatchId: { $regex: trimmed, $options: 'i' } }
-            ];
-            if (!isNaN(num) && String(num) === trimmed) searchConditions.push({ batchNumber: num });
-            filter.$or = searchConditions;
+            const searchFilter = buildSearchFilter(search);
+            if (searchFilter) Object.assign(filter, searchFilter);
         }
 
         const boxes = await DispatchBox.find(filter).sort({ closedAt: -1 });

@@ -12,5 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getDesktopSecret: () => ipcRenderer.invoke('get-desktop-secret'),
   // Synchronous: read once at page load so api.js/app.js can use it immediately
   serverPort: ipcRenderer.sendSync('get-server-port-sync'),
-  isElectron: true
+  isElectron: true,
+  // Print an HTML string to PDF (Electron-native, no print dialog)
+  printToPDF: (html, filename) => ipcRenderer.invoke('print-to-pdf', { html, filename })
 });

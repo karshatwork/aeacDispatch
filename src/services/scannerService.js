@@ -207,6 +207,20 @@ class ScannerService extends EventEmitter {
             rtscts: this.rtscts
         };
     }
+
+    /**
+     * Simulate an incoming scan event (for testing, software triggers, or CLI emulator)
+     * Emits the exact same 'scan' event as physical COM port hardware.
+     */
+    simulateScan(scannedPayload) {
+        const payload = (scannedPayload || '').toString().trim();
+        if (payload.length > 0) {
+            console.log(`[SCANNER SIMULATION] Received: ${payload}`);
+            this.emit('scan', payload);
+            return true;
+        }
+        return false;
+    }
 }
 
 // Singleton scanner service

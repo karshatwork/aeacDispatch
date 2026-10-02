@@ -243,8 +243,10 @@
                         onclick="setQuantityMode('parts')">PARTS</button>
                     </div>
                     <input type="number" id="dispatch-target-qty" class="form-control" value="2" min="1"
+                      oninput="validateDispatchQuantity()"
                       style="width: 90px; text-align: center; font-weight: 700; font-family: var(--font-mono);">
                   </div>
+                  <div id="dispatch-qty-hint" style="display: none; font-size: 11px; font-family: var(--font-mono); margin-top: 4px; line-height: 1.2;"></div>
                 </div>
 
                 <button class="btn-scada btn-success" style="height: 38px; width: 100%;"
@@ -255,157 +257,106 @@
             </div>
           </div>
 
-          <!-- ACTIVE TRANSACTION DUAL COCKPIT (WHEN DISPATCH ACTIVE) -->
+          <!-- ACTIVE TRANSACTION PANORAMIC COCKPIT (WHEN DISPATCH ACTIVE) -->
           <div id="dispatch-active-card" style="display: none;">
-            <div class="dispatch-control-deck">
-
-              <!-- LEFT COCKPIT: RADIAL GAUGE & NEXT TARGET RETICLE -->
-              <div>
-                <div class="hud-telemetry-card">
-                  <div
-                    style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; padding-bottom: 8px;">
-                    <span
-                      style="font-size: 11px; font-family: var(--font-mono); color: #94a3b8; font-weight: 700;">ORDER
-                      DISPATCH PROGRESS</span>
-                    <span class="badge badge-available">IN_PROGRESS</span>
-                  </div>
-
-                  <!-- RADIAL COMPLETION GAUGE -->
-                  <div class="gauge-wrap">
-                    <svg class="gauge-svg" viewBox="0 0 160 160">
-                      <circle class="gauge-bg-circle" cx="80" cy="80" r="70"></circle>
-                      <circle id="dispatch-radial-gauge" class="gauge-val-circle" cx="80" cy="80" r="70"></circle>
-                    </svg>
-                    <div class="gauge-center-text">
-                      <div id="dispatch-radial-pct" class="gauge-percent">0%</div>
-                      <div class="gauge-subtext">VERIFIED</div>
+            
+            <!-- 1. OVERHEAD SCADA TELEMETRY & FIFO GUIDANCE PANEL -->
+            <div class="scada-panel" style="margin-bottom: 12px;">
+              <div class="scada-panel-header" style="flex-wrap: wrap; gap: 8px; padding: 7px 16px; min-height: 38px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span><i class="ri-radar-line"></i> ACTIVE DISPATCH COCKPIT</span>
+                  <span id="active-tx-status-badge" class="badge badge-available">IN PROGRESS</span>
+                </div>
+                <div class="telemetry-meta-specs-bar">
+                  <span>ORDER: <strong id="active-tx-id" style="color: var(--color-primary);">DSP...</strong></span>
+                  <span class="specs-sep">&bull;</span>
+                  <span>MODEL: <strong id="active-tx-model" style="color: var(--text-heading);">...</strong></span>
+                  <span class="specs-sep">&bull;</span>
+                  <span>TARGET: <strong id="active-tx-target" style="color: var(--text-heading);">...</strong></span>
+                  <span class="specs-sep">&bull;</span>
+                  <span>OPERATOR: <strong id="active-tx-operator" style="color: var(--text-secondary);">...</strong></span>
+                </div>
+              </div>
+              <div class="scada-panel-body" style="padding: 10px 16px;">
+                <div class="dispatch-telemetry-body-grid">
+                  <!-- Progress Pod -->
+                  <div class="telemetry-progress-column">
+                    <div class="telemetry-metrics-row">
+                      <div class="telemetry-metric-pill">
+                        <span class="metric-label">SCANNED BOXES</span>
+                        <strong id="dispatch-radial-boxes" class="metric-val text-cyan">0 / 0</strong>
+                      </div>
+                      <div class="telemetry-metric-pill">
+                        <span class="metric-label">TOTAL PARTS</span>
+                        <strong id="dispatch-radial-parts" class="metric-val text-emerald">0 / 0</strong>
+                      </div>
+                      <div class="telemetry-metric-pill">
+                        <span class="metric-label">ORDER PROGRESS</span>
+                        <strong id="dispatch-radial-pct" class="metric-val text-primary">0%</strong>
+                      </div>
+                    </div>
+                    <div class="telemetry-progress-track">
+                      <div id="dispatch-progress-fill" class="telemetry-progress-fill" style="width: 0%;"></div>
                     </div>
                   </div>
 
-                  <div
-                    style="display: flex; justify-content: space-around; width: 100%; border-top: 1px solid #1e293b; padding-top: 10px; margin-bottom: 12px; font-family: var(--font-mono); font-size: 11px;">
-                    <div>BOXES: <strong id="dispatch-radial-boxes" style="color: var(--text-screen-cyan);">0 /
-                        0</strong></div>
-                    <div>PARTS: <strong id="dispatch-radial-parts" style="color: var(--text-screen-green);">0 /
-                        0</strong></div>
-                  </div>
-
-                  <!-- NEXT REQUIRED FIFO TARGET RETICLE -->
-                  <div class="radar-target-reticle">
-                    <div class="reticle-corner reticle-tl"></div>
-                    <div class="reticle-corner reticle-tr"></div>
-                    <div class="reticle-corner reticle-bl"></div>
-                    <div class="reticle-corner reticle-br"></div>
-
-                    <div class="reticle-header">
-                      <span><i class="ri-radar-line"></i> NEXT TARGET SCAN</span>
-                      <span id="reticle-next-model">MD-X100</span>
+                  <!-- Next FIFO Target Card -->
+                  <div class="telemetry-fifo-guidance-card">
+                    <div class="fifo-guidance-header">
+                      <span><i class="ri-focus-3-line"></i> NEXT FIFO TARGET</span>
                     </div>
-                    <div id="reticle-next-batch" class="reticle-batch-num">BATCH #--</div>
-                    <div id="reticle-next-sub" class="reticle-sub">Produced: -- &bull; Qty: -- Parts</div>
-                  </div>
-
-                  <div style="width: 100%; margin-top: 14px;">
-                    <div
-                      style="font-family: var(--font-mono); font-size: 10px; color: #94a3b8; line-height: 1.8; margin-bottom: 10px;">
-                      <div>ORDER ID: <strong id="active-tx-id" style="color: #60a5fa;">DSP...</strong></div>
-                      <div>MODEL: <strong id="active-tx-model">...</strong></div>
-                      <div>TARGET: <strong id="active-tx-target">...</strong></div>
-                      <div>OPERATOR: <span id="active-tx-operator">...</span></div>
+                    <div class="fifo-target-inline-row">
+                      <span id="reticle-next-batch" class="fifo-batch-hero">BATCH #--</span>
+                      <span id="reticle-next-sub" class="fifo-sub-hero">&bull; Produced: YYYY-MM-DD &bull; Qty: -- Parts</span>
                     </div>
-                    <button class="btn-scada btn-danger" style="width: 100%; padding: 6px;"
-                      onclick="handleCancelDispatch()">
-                      <i class="ri-close-circle-line"></i> CANCEL DISPATCH SESSION
-                    </button>
                   </div>
                 </div>
               </div>
-
-              <!-- RIGHT COCKPIT: ALLOCATED BOXES FIFO DECK -->
-              <div class="scada-panel" style="margin-bottom: 0;">
-                <div class="scada-panel-header">
-                  <span><i class="ri-list-check-2"></i> ALLOCATED BOXES (SCAN IN ANY ORDER)</span>
-                  <span id="dispatch-progress-text"
-                    style="font-family: var(--font-mono); color: var(--color-primary); font-weight: 700;">SCANNING IN
-                    PROGRESS</span>
-                </div>
-                <div class="scada-panel-body">
-                  <!-- ANIMATED VISUAL DISPATCH TRANSFER DOCK -->
-                  <div class="visual-transfer-deck">
-                    <div class="transfer-deck-grid">
-                      <!-- Infeed Queue -->
-                      <div>
-                        <div class="transfer-section-title">
-                          <span><i class="ri-inbox-unarchive-line"></i> DISPATCH QUEUE</span>
-                          <span id="transfer-infeed-count" style="color: #38bdf8;">0 PENDING</span>
-                        </div>
-                        <div id="transfer-infeed-lane" class="transfer-lane">
-                          <!-- Infeed boxes rendered here -->
-                        </div>
-                      </div>
-
-                      <!-- Scanning Ingest Bridge -->
-                      <div class="transfer-gate-bridge">
-                        <div class="gate-beam-icon">
-                          <i class="ri-scan-2-line"></i>
-                        </div>
-                        <i class="ri-arrow-right-double-line gate-beam-arrow"></i>
-                      </div>
-
-                      <!-- Loaded Dispatch Pallet -->
-                      <div>
-                        <div class="transfer-section-title">
-                          <span><i class="ri-truck-line"></i> OUTBOUND DOCK PALLET</span>
-                          <span id="transfer-dock-count" style="color: #34d399;">0 LOADED</span>
-                        </div>
-                        <div id="transfer-dock-lane" class="transfer-lane">
-                          <!-- Loaded boxes rendered here -->
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Linear Progress Bar -->
-                  <div
-                    style="height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin-bottom: 16px;">
-                    <div id="dispatch-progress-fill"
-                      style="height: 100%; background: linear-gradient(90deg, var(--color-primary), #10b981); width: 0%; transition: width 0.3s ease;">
-                    </div>
-                  </div>
-
-                  <!-- Table of Allocated Boxes -->
-                  <table class="scada-table" style="margin-bottom: 16px;">
-                    <thead>
-                      <tr>
-                        <th>RANK</th>
-                        <th>BOX / BATCH NO</th>
-                        <th>PRODUCED AT</th>
-                        <th>PARTS</th>
-                        <th>BATCH QR PAYLOAD</th>
-                        <th>STATUS</th>
-                      </tr>
-                    </thead>
-                    <tbody id="fifo-pick-tbody">
-                      <tr>
-                        <td colspan="6" style="text-align: center; color: #64748b;">No active dispatch session.</td>
-                      </tr>
-                    </tbody>
-                  </table>
-
-                  <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <button type="button" id="btn-cancel-dispatch" class="btn-scada btn-danger"
-                      style="padding: 10px 18px; font-size: 13px;" onclick="handleCancelDispatch()">
-                      <i class="ri-close-circle-line"></i> CANCEL DISPATCH
-                    </button>
-                    <button id="btn-confirm-dispatch" class="btn-scada btn-success"
-                      style="padding: 10px 24px; font-size: 13px;" disabled onclick="handleConfirmDispatch()">
-                      <i class="ri-checkbox-circle-line"></i> CONFIRM & COMPLETE DISPATCH
-                    </button>
-                  </div>
-                </div>
-              </div>
-
             </div>
+
+            <!-- 2. CENTER HERO: WAREHOUSE STAGING BAY ANIMATION COMPONENT -->
+            <div id="dispatch-animation-container"></div>
+
+            <!-- 3. INTERACTIVE ALLOCATED BOXES LEDGER (BOTTOM TABLE) -->
+            <div class="scada-panel" style="margin-bottom: 0;">
+              <div class="scada-panel-header">
+                <span><i class="ri-list-check-2"></i> ALLOCATED BOXES (SCAN IN ANY ORDER)</span>
+                <button class="btn-scada btn-secondary" style="padding: 2px 10px; font-size: 11px; height: 26px;" onclick="printPendingManifest()" title="Print Pending Dispatch Note">
+                  <i class="ri-printer-line"></i> MANIFEST
+                </button>
+              </div>
+              <div class="scada-panel-body" style="padding-bottom: 16px;">
+                <table class="scada-table" style="margin-bottom: 16px;">
+                  <thead>
+                    <tr>
+                      <th>RANK</th>
+                      <th>BOX / BATCH NO</th>
+                      <th>PRODUCED AT</th>
+                      <th>PARTS</th>
+                      <th>STATUS</th>
+                    </tr>
+                  </thead>
+                  <tbody id="fifo-pick-tbody">
+                    <tr>
+                      <td colspan="5" style="text-align: center; color: #64748b;">No active dispatch session.</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <!-- Bottom Consolidated Action Deck -->
+                <div class="dispatch-actions-deck">
+                  <button type="button" id="btn-cancel-dispatch" class="btn-scada btn-danger"
+                    style="padding: 10px 20px; font-size: 13px;" onclick="handleCancelDispatch()">
+                    <i class="ri-close-circle-line"></i> CANCEL DISPATCH
+                  </button>
+                  <button id="btn-confirm-dispatch" class="btn-scada btn-success"
+                    style="padding: 10px 26px; font-size: 13px;" disabled onclick="handleConfirmDispatch()">
+                    <i class="ri-checkbox-circle-line"></i> CONFIRM & COMPLETE DISPATCH
+                  </button>
+                </div>
+              </div>
+            </div>
+
           </div>
 
         </div>
@@ -487,11 +438,10 @@
                   <div style="flex: 2; min-width: 220px;">
                     <label class="form-label" style="font-size: 10.5px; letter-spacing: 0.04em;"><i
                         class="ri-search-line"></i> SEARCH BOX # / SERIAL / QR / REF</label>
-                    <div style="position: relative;">
-                      <i class="ri-search-line"
-                        style="position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 14px; pointer-events: none; line-height: 1;"></i>
+                    <div class="input-with-icon">
+                      <i class="ri-search-line"></i>
                       <input type="text" id="inv-filter-search" class="form-control"
-                        style="padding-left: 32px; height: 36px; font-size: 12px;"
+                        style="height: 36px; font-size: 12px; padding-left: 34px !important;"
                         placeholder="Search Box #, Serial SN-..., QR, Hold or Rejection ID..."
                         onkeydown="if(event.key==='Enter') executeInventorySearch()">
                     </div>
@@ -561,11 +511,10 @@
           <!-- SEARCH DECK -->
           <div class="trace-search-bar">
             <div class="trace-search-input-wrap">
-              <div style="position: relative; flex: 1;">
-                <i class="ri-search-line"
-                  style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 15px; pointer-events: none; line-height: 1;"></i>
+              <div class="input-with-icon" style="flex: 1;">
+                <i class="ri-search-line"></i>
                 <input type="text" id="trace-query-input" class="form-control"
-                  style="padding-left: 36px; height: 38px; font-size: 13px;"
+                  style="height: 38px; font-size: 13px; padding-left: 36px !important;"
                   placeholder="Enter Box Number (e.g. 1034), Serial Number (e.g. SN-M002-1034-001), or full QR Code..."
                   onkeydown="if(event.key==='Enter') executeTrace()">
               </div>
@@ -694,6 +643,15 @@
                     <option value="ALL">ALL MODELS</option>
                   </select>
                 </div>
+                <div style="flex: 1.1; min-width: 140px;">
+                  <label class="form-label" style="font-size: 10.5px;"><i class="ri-checkbox-circle-line"></i> STATUS</label>
+                  <select id="rep-filter-status" class="form-control" style="height: 34px; font-size: 11px;">
+                    <option value="ALL" selected>ALL STATUSES</option>
+                    <option value="completed">COMPLETED</option>
+                    <option value="cancelled">CANCELLED</option>
+                    <option value="stale">FAILED / STALE</option>
+                  </select>
+                </div>
               </div>
             </div>
           </div>
@@ -701,16 +659,16 @@
           <!-- KPI Tiles (filter-driven) -->
           <div class="grid-3" style="margin-bottom: 14px;">
             <div class="stat-tile">
-              <div id="rep-txs-month" class="stat-tile-val" style="color: #0891b2;">0</div>
+              <div id="rep-txs-month" class="stat-tile-val" style="color: #5e3ca5;">0</div>
               <div class="stat-tile-lbl">COMPLETED DISPATCHES</div>
             </div>
             <div class="stat-tile">
               <div id="rep-boxes-month" class="stat-tile-val" style="color: var(--color-primary);">0</div>
-              <div class="stat-tile-lbl" id="rep-stat-lbl-boxes">DISPATCHED (BOXES)</div>
+              <div class="stat-tile-lbl" id="rep-stat-lbl-boxes">DISPATCHED BOXES</div>
             </div>
             <div class="stat-tile">
               <div id="rep-parts-month" class="stat-tile-val" style="color: var(--color-success);">0</div>
-              <div class="stat-tile-lbl" id="rep-stat-lbl-parts">DISPATCHED (PARTS)</div>
+              <div class="stat-tile-lbl" id="rep-stat-lbl-parts">DISPATCHED PARTS</div>
             </div>
           </div>
 
@@ -770,10 +728,11 @@
               <table class="scada-table" style="margin-bottom: 0;">
                 <thead>
                   <tr>
-                    <th style="width: 150px;">DISPATCH ID</th>
+                    <th style="width: 145px;">DISPATCH ID</th>
                     <th>DATE &amp; TIME</th>
+                    <th>STATUS</th>
                     <th>MODEL</th>
-                    <th>BOXES</th>
+                    <th>PROGRESS</th>
                     <th>PARTS</th>
                     <th>OPERATOR</th>
                     <th style="text-align: right; padding-right: 16px;">ACTIONS</th>
@@ -781,9 +740,10 @@
                 </thead>
                 <tbody id="history-tbody">
                   <tr>
-                    <td colspan="7" style="text-align: center; color: #64748b; padding: 24px;">Loading dispatch
+                    <td colspan="8" style="text-align: center; color: #64748b; padding: 24px;">Loading dispatch
                       history...</td>
                   </tr>
+
                 </tbody>
               </table>
 
@@ -1110,11 +1070,10 @@
 
                 <!-- Add Reason Input Bar -->
                 <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                  <div style="position: relative; flex: 1;">
-                    <i class="ri-add-circle-line"
-                      style="position: absolute; left: 10px; top: 9px; color: var(--text-muted); font-size: 14px;"></i>
+                  <div class="input-with-icon" style="flex: 1;">
+                    <i class="ri-add-circle-line"></i>
                     <input type="text" id="sys-new-reason-input" class="form-control"
-                      style="padding-left: 32px; height: 34px; font-size: 12px;"
+                      style="height: 34px; font-size: 12px; padding-left: 34px !important;"
                       placeholder="Type new reason (e.g. Tape Seal Damaged)..."
                       onkeydown="if(event.key==='Enter') addNewAuditReason()">
                   </div>
@@ -1177,6 +1136,18 @@
             id="modal-hold-box-meta">
             Model: -- &bull; Qty: -- PCS
           </div>
+        </div>
+
+        <!-- Physical Hardware Scan Verification Badge -->
+        <div id="modal-hold-scan-card" style="background: #fffbeb; border: 1px dashed #f59e0b; border-radius: var(--border-radius-sm); padding: 9px 12px; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <i class="ri-barcode-line" style="font-size: 19px; color: #d97706;"></i>
+            <div>
+              <div id="modal-hold-scan-title" style="font-weight: 700; font-size: 11.5px; color: #92400e;">PHYSICAL BOX SCAN REQUIRED</div>
+              <div id="modal-hold-scan-desc" style="font-size: 10px; color: #b45309;">Scan barcode on Box #-- to verify in hand</div>
+            </div>
+          </div>
+          <span id="modal-hold-scan-pill" class="badge" style="background: #fde68a; color: #92400e; font-weight: 800; font-size: 9px; letter-spacing: 0.04em;">AWAITING SCAN</span>
         </div>
 
         <!-- Inline Error Banner -->
@@ -1251,6 +1222,18 @@
           </div>
         </div>
 
+        <!-- Physical Hardware Scan Verification Badge -->
+        <div id="modal-reject-scan-card" style="background: #fffbeb; border: 1px dashed #f59e0b; border-radius: var(--border-radius-sm); padding: 9px 12px; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <i class="ri-barcode-line" style="font-size: 19px; color: #d97706;"></i>
+            <div>
+              <div id="modal-reject-scan-title" style="font-weight: 700; font-size: 11.5px; color: #92400e;">PHYSICAL BOX SCAN REQUIRED</div>
+              <div id="modal-reject-scan-desc" style="font-size: 10px; color: #b45309;">Scan barcode on Box #-- to verify in hand</div>
+            </div>
+          </div>
+          <span id="modal-reject-scan-pill" class="badge" style="background: #fde68a; color: #92400e; font-weight: 800; font-size: 9px; letter-spacing: 0.04em;">AWAITING SCAN</span>
+        </div>
+
         <!-- Inline Error Banner -->
         <div id="modal-reject-error"
           style="display: none; background: #fef2f2; border: 1px solid #fca5a5; color: #dc2626; padding: 8px 12px; font-family: var(--font-mono); font-size: 11px; margin-bottom: 12px; border-radius: var(--border-radius-sm); font-weight: 600;">
@@ -1323,6 +1306,18 @@
           </div>
         </div>
 
+        <!-- Physical Hardware Scan Verification Badge -->
+        <div id="modal-reopen-scan-card" style="background: #fffbeb; border: 1px dashed #f59e0b; border-radius: var(--border-radius-sm); padding: 9px 12px; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <i class="ri-barcode-line" style="font-size: 19px; color: #d97706;"></i>
+            <div>
+              <div id="modal-reopen-scan-title" style="font-weight: 700; font-size: 11.5px; color: #92400e;">PHYSICAL BOX SCAN REQUIRED</div>
+              <div id="modal-reopen-scan-desc" style="font-size: 10px; color: #b45309;">Scan barcode on Box #-- to verify in hand</div>
+            </div>
+          </div>
+          <span id="modal-reopen-scan-pill" class="badge" style="background: #fde68a; color: #92400e; font-weight: 800; font-size: 9px; letter-spacing: 0.04em;">AWAITING SCAN</span>
+        </div>
+
         <!-- Inline Error Banner -->
         <div id="modal-reopen-error"
           style="display: none; background: #fef2f2; border: 1px solid #fca5a5; color: #dc2626; padding: 8px 12px; font-family: var(--font-mono); font-size: 11px; margin-bottom: 12px; border-radius: var(--border-radius-sm); font-weight: 600;">
@@ -1382,10 +1377,23 @@
           </div>
         </div>
 
+        <!-- Physical Hardware Scan Verification Badge -->
+        <div id="modal-release-scan-card" style="background: #fffbeb; border: 1px dashed #f59e0b; border-radius: var(--border-radius-sm); padding: 9px 12px; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <i class="ri-barcode-line" style="font-size: 19px; color: #d97706;"></i>
+            <div>
+              <div id="modal-release-scan-title" style="font-weight: 700; font-size: 11.5px; color: #92400e;">PHYSICAL BOX SCAN REQUIRED</div>
+              <div id="modal-release-scan-desc" style="font-size: 10px; color: #b45309;">Scan barcode on Box #-- to verify in hand</div>
+            </div>
+          </div>
+          <span id="modal-release-scan-pill" class="badge" style="background: #fde68a; color: #92400e; font-weight: 800; font-size: 9px; letter-spacing: 0.04em;">AWAITING SCAN</span>
+        </div>
+
         <!-- Inline Error Banner -->
         <div id="modal-release-error"
           style="display: none; background: #fef2f2; border: 1px solid #fca5a5; color: #dc2626; padding: 8px 12px; font-family: var(--font-mono); font-size: 11px; margin-bottom: 12px; border-radius: var(--border-radius-sm); font-weight: 600;">
         </div>
+
 
         <div class="form-group" style="margin-bottom: 0;">
           <label class="form-label" style="display: flex; justify-content: space-between; align-items: center;">
@@ -1466,32 +1474,115 @@
     </div>
   </div>
 
+  <!-- ========================================================================
+       DISPATCH TRANSACTION AUDIT DETAILS MODAL
+       ======================================================================== -->
+  <div id="modal-dispatch-details" class="custom-modal-backdrop modal-overlay" style="display: none;"
+    onclick="if(event.target === this) closeModals()">
+    <div class="custom-modal-card" style="max-width: 520px;">
+      <div class="custom-modal-header">
+        <div class="custom-modal-icon-wrap icon-warning" id="modal-dtl-icon-wrap">
+          <i class="ri-error-warning-line" id="modal-dtl-icon"></i>
+        </div>
+        <div style="flex: 1;">
+          <div class="custom-modal-title" id="modal-dtl-title">DISPATCH TRANSACTION AUDIT</div>
+          <div class="custom-modal-subtitle" id="modal-dtl-subtitle">Termination Reason &bull; Shop-Floor Governance Ledger</div>
+        </div>
+        <button type="button" class="custom-modal-close-btn" onclick="closeModals()" title="Close">
+          <i class="ri-close-line"></i>
+        </button>
+      </div>
+
+      <div class="custom-modal-body" style="padding-top: 14px;">
+        <!-- Target Dispatch Context Card -->
+        <div id="modal-dtl-context"
+          style="background: #ffffff; border: 1px solid var(--border-panel); border-left: 3px solid var(--color-danger); padding: 9px 12px; border-radius: var(--border-radius-sm); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <i class="ri-truck-line" id="modal-dtl-context-icon" style="color: var(--color-danger); font-size: 16px;"></i>
+            <span id="modal-dtl-dispatch-id"
+              style="font-weight: 800; font-family: var(--font-mono); color: var(--text-heading); font-size: 13px;">DSP--</span>
+          </div>
+          <span id="modal-dtl-status-badge" class="badge badge-danger">CANCELLED</span>
+        </div>
+
+        <!-- Audit Reason / Completion Remarks Box -->
+        <div style="background: #f8fafc; border: 1px solid var(--border-panel); border-radius: var(--border-radius-sm); padding: 10px 12px; margin-bottom: 12px;">
+          <div id="modal-dtl-reason-label"
+            style="font-size: 10px; font-weight: 700; color: var(--text-secondary); margin-bottom: 4px; letter-spacing: 0.04em; display: flex; align-items: center; gap: 4px;">
+            <i class="ri-information-line"></i> REASON FOR CANCELLATION / ABORT
+          </div>
+          <div id="modal-dtl-reason"
+            style="font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; color: #b91c1c; line-height: 1.4;">
+            --
+          </div>
+        </div>
+
+        <!-- Telemetry & Parameters Grid -->
+        <div style="background: #ffffff; border: 1px solid var(--border-panel); border-radius: var(--border-radius-sm); padding: 12px; margin-bottom: 4px;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; font-size: 11px;">
+            <div>
+              <div style="color: var(--text-secondary); font-size: 10px; margin-bottom: 1px; font-weight: 600;">MODEL ID</div>
+              <div id="modal-dtl-model" style="font-weight: 700; color: var(--text-heading); font-family: var(--font-mono);">--</div>
+            </div>
+            <div>
+              <div style="color: var(--text-secondary); font-size: 10px; margin-bottom: 1px; font-weight: 600;">OPERATOR</div>
+              <div id="modal-dtl-operator" style="font-weight: 700; color: var(--text-heading);">--</div>
+            </div>
+            <div>
+              <div style="color: var(--text-secondary); font-size: 10px; margin-bottom: 1px; font-weight: 600;">OPENED AT</div>
+              <div id="modal-dtl-opened" style="font-family: var(--font-mono); font-size: 10.5px; color: var(--text-secondary);">--</div>
+            </div>
+            <div>
+              <div id="modal-dtl-term-label" style="color: var(--text-secondary); font-size: 10px; margin-bottom: 1px; font-weight: 600;">TERMINATED AT</div>
+              <div id="modal-dtl-terminated" style="font-family: var(--font-mono); font-size: 10.5px; color: var(--text-secondary);">--</div>
+            </div>
+            <div>
+              <div style="color: var(--text-secondary); font-size: 10px; margin-bottom: 1px; font-weight: 600;">BOXES SCANNED</div>
+              <div id="modal-dtl-progress" style="font-weight: 700; color: var(--color-primary); font-family: var(--font-mono);">0 of 0 Verified</div>
+            </div>
+            <div>
+              <div style="color: var(--text-secondary); font-size: 10px; margin-bottom: 1px; font-weight: 600;">PARTS TARGET</div>
+              <div id="modal-dtl-parts" style="font-weight: 700; color: var(--text-heading); font-family: var(--font-mono);">--</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="custom-modal-actions">
+        <button type="button" class="btn-scada btn-secondary" onclick="closeModals()">CLOSE</button>
+        <button type="button" class="btn-scada btn-primary" id="modal-dtl-btn-manifest">
+          <i class="ri-file-text-line"></i> VIEW MANIFEST
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- OUTBOUND DISPATCH MANIFEST & ADVICE NOTE MODAL -->
+
   <div id="modal-dispatch-bill" class="modal-overlay">
-    <div class="modal-card" style="width: 880px; height: 90vh;">
+    <div class="modal-card" style="width: 900px; max-height: 92vh; display: flex; flex-direction: column;">
       <div class="modal-header no-print">
         <span style="font-weight: 700; font-size: 12px; letter-spacing: 0.04em;"><i class="ri-file-text-line"></i>
           OUTBOUND DISPATCH MANIFEST & ADVICE NOTE</span>
-        <div style="display: flex; gap: 8px;">
-          <button class="btn-scada btn-success" onclick="printDispatchBill()"><i class="ri-printer-line"></i> PRINT /
-            SAVE MANIFEST</button>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <label style="display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-secondary); cursor: pointer; user-select: none;">
+            <input type="checkbox" id="bill-serial-toggle" onchange="toggleManifestSerials()" style="cursor: pointer;">
+            Show Serials
+          </label>
+          <button class="btn-scada btn-success" onclick="printDispatchBill()"><i class="ri-printer-line"></i> PRINT / SAVE</button>
           <button class="hud-icon-btn" onclick="closeModals()"><i class="ri-close-line"></i></button>
         </div>
       </div>
 
       <div id="printable-bill" class="modal-body"
-        style="background: #fff; color: #000; padding: 24px; font-family: Arial, sans-serif;">
-        <!-- Dual Logos -->
-        <div
-          style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 14px;">
-          <img src="/assets/logo-left.png" alt="Elektrosil"
-            style="height: 44px; max-width: 170px; object-fit: contain;">
-          <div style="text-align: center;">
+        style="background: #fff; color: #000; padding: 24px; font-family: Arial, sans-serif; overflow-y: auto; flex: 1;">
+        <!-- Header: right logo only -->
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 14px;">
+          <div>
             <h2 style="margin: 0; font-size: 16pt; font-weight: bold; letter-spacing: 0.5px;">DISPATCH MANIFEST</h2>
-            <div style="font-size: 10pt; font-weight: bold; color: #0284c7; margin-top: 4px;" id="bill-dispatch-id">
-              DSP202609260001</div>
+            <div style="font-size: 10pt; font-weight: bold; color: #0284c7; margin-top: 4px;" id="bill-dispatch-id">DSP...</div>
           </div>
-          <img src="/assets/logo-right.png" alt="Mahindra" style="height: 44px; max-width: 170px; object-fit: contain;">
+          <img src="/assets/logo-right.png" alt="Customer" style="height: 44px; max-width: 170px; object-fit: contain;">
         </div>
 
         <!-- Meta Grid -->
@@ -1504,32 +1595,25 @@
           </div>
           <div>
             <div><strong>Internal Part ID:</strong> <span id="bill-internal-part">...</span></div>
-            <div><strong>Revision Info:</strong> <span id="bill-rev-info">...</span></div>
-            <div><strong>Dispatched By (Operator):</strong> <span id="bill-operator">...</span></div>
+            <div><strong>Dispatched By:</strong> <span id="bill-operator">...</span></div>
             <div><strong>Total Dispatched:</strong> <strong id="bill-totals" style="color: #059669;">...</strong></div>
           </div>
         </div>
 
-        <!-- Dispatched Boxes & Full Serials Breakdown -->
-        <div
-          style="font-weight: bold; font-size: 11pt; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; margin-bottom: 8px;">
-          DISPATCHED BOXES & SERIAL NUMBERS BREAKDOWN:
+        <!-- Dispatched Boxes -->
+        <div style="font-weight: bold; font-size: 11pt; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; margin-bottom: 8px;">
+          DISPATCHED BOXES:
         </div>
 
         <div id="bill-boxes-container" style="margin-bottom: 20px;"></div>
 
-        <!-- Sign-Off Blocks -->
-        <div
-          style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; border-top: 2px solid #cbd5e1; padding-top: 35px; margin-top: 25px; text-align: center; font-size: 10pt;">
+        <!-- Sign-Off Blocks: 2 signatures only -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 40px; border-top: 2px solid #cbd5e1; padding-top: 40px; margin-top: 25px; text-align: center; font-size: 10pt;">
           <div>
             <div style="border-top: 1px solid #000; padding-top: 4px; font-weight: bold;">PREPARED BY (OPERATOR)</div>
           </div>
           <div>
-            <div style="border-top: 1px solid #000; padding-top: 4px; font-weight: bold;">CHECKED BY (SUPERVISOR)</div>
-          </div>
-          <div>
-            <div style="border-top: 1px solid #000; padding-top: 4px; font-weight: bold;">AUTHORIZED (DISPATCH
-              IN-CHARGE)</div>
+            <div style="border-top: 1px solid #000; padding-top: 4px; font-weight: bold;">AUTHORIZED BY (DISPATCH IN-CHARGE)</div>
           </div>
         </div>
       </div>
@@ -1656,30 +1740,28 @@
           style="background: #ffffff; border: 1px solid var(--border-light); padding: 16px; max-height: 320px; overflow-y: auto; font-size: 11px; line-height: 1.6; color: #334155; font-family: var(--font-mono); border-radius: var(--border-radius-sm);">
           <div
             style="font-weight: 800; font-size: 12px; color: #0f172a; margin-bottom: 10px; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">
-            RECORDKEEPER FG DISPATCH &bull; SOFTWARE LICENSE AGREEMENT &amp; EULA
+            RECORDKEEPER DISPATCH &bull; SOFTWARE LICENSE AGREEMENT &amp; EULA
           </div>
           <p style="margin-bottom: 10px; font-weight: 600; color: #475569;">
             [END-USER LICENSE AGREEMENT (EULA) — TERMS AND CONDITIONS]
           </p>
           <p style="margin-bottom: 10px;">
-            1. GRANT OF LICENSE: RecordKeeper Packaging &amp; Industry 4.0 hereby grants the licensee a
-            non-exclusive, non-transferable, single-node workstation license to utilize this software solely
-            on the authorized hardware terminal matching the designated cryptographic machine fingerprint.
+            1. GRANT OF LICENSE: RecordKeeper hereby grants the licensee a non-exclusive, non-transferable, single-node workstation license to utilize this Dispatch Management System solely on authorized hardware terminals matching the designated cryptographic machine fingerprint.
           </p>
           <p style="margin-bottom: 10px;">
-            2. APPLIANCE INTEGRITY &amp; ZERO TAMPERING: The software, including its cryptographic licensing
-            engine, automated hardware COM-scanner bridge, and local database sync services, is locked and
-            verified with cryptographic hardware signatures. Unauthorized modification or circumvention of
-            licensing mechanisms is strictly prohibited.
+            2. APPLIANCE INTEGRITY &amp; SECURITY: The software, including its cryptographic licensing engine, automated hardware COM-scanner bridge, and database sync services, is locked and verified with cryptographic hardware signatures. Unauthorized modification, reverse engineering, or circumvention of licensing mechanisms is strictly prohibited.
           </p>
           <p style="margin-bottom: 10px;">
-            3. AUDIT TRAIL &amp; LOG INTEGRITY: All barcode scanning events, hold/reject actions, and dispatch
-            transactions are cryptographically bound and logged for industrial traceability.
+            3. AUDIT TRAIL &amp; DATA INTEGRITY: All barcode scanning events, hold/quarantine actions, reject entries, and dispatch transactions are cryptographically recorded in the immutable audit trail for shop-floor compliance and industrial traceability.
+          </p>
+          <p style="margin-bottom: 10px;">
+            4. OPERATIONAL COMPLIANCE: The software is configured for strict First-In First-Out (FIFO) staging and quality control. Authorized operators and supervisors are responsible for verifying physical box barcodes against staging manifests in accordance with plant Standard Operating Procedures (SOP).
           </p>
           <p
             style="color: #64748b; font-size: 10px; margin-top: 14px; border-top: 1px dashed #cbd5e1; padding-top: 8px;">
-            &copy; RecordKeeper &amp; Karsh Industrial Digital Solutions. All Rights Reserved.
+            &copy; 2026 RecordKeeper Dispatch. All Rights Reserved.
           </p>
+
         </div>
       </div>
       <div class="custom-modal-actions" style="display: flex; justify-content: flex-end;">
@@ -1740,7 +1822,7 @@
           </div>
 
           <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label"><i class="ri-shield-user-line"></i>PERMISSION LEVEL</label>
+            <label class="form-label"><i class="ri-shield-user-line"></i> PERMISSION LEVEL</label>
             <select id="cu-role" class="form-control">
               <option value="operator" selected>Operator</option>
               <option value="supervisor">Supervisor</option>
@@ -1788,7 +1870,7 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label"><i class="ri-user-line"></i>USERNAME</label>
+            <label class="form-label"><i class="ri-user-line"></i> USERNAME</label>
             <input type="text" id="eu-username" class="form-control" readonly disabled
               style="background: #f1f5f9; color: #64748b; cursor: not-allowed;" />
           </div>
@@ -1799,7 +1881,7 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label"><i class="ri-shield-user-line"></i>PERMISSION LEVEL</label>
+            <label class="form-label"><i class="ri-shield-user-line"></i> PERMISSION LEVEL</label>
             <select id="eu-role" class="form-control">
               <option value="operator">Operator</option>
               <option value="supervisor">Supervisor</option>
@@ -1904,9 +1986,10 @@
         </button>
       </div>
       <div class="custom-modal-body" style="padding: 14px 16px;">
-        <div style="margin-bottom: 10px;">
+        <div class="input-with-icon" style="margin-bottom: 10px;">
+          <i class="ri-search-line"></i>
           <input type="text" id="trace-modal-serial-filter" class="form-control"
-            style="font-family: var(--font-mono); font-size: 11.5px; height: 32px;"
+            style="font-family: var(--font-mono); font-size: 11.5px; height: 32px; padding-left: 32px !important;"
             placeholder="Quick search serials in this box (e.g. 025)..." oninput="filterModalSerials(this.value)" />
         </div>
         <div id="trace-modal-serials-grid" class="trace-serials-grid" style="max-height: 280px;"></div>
@@ -1923,6 +2006,7 @@
   <script src="/js/api.js"></script>
   <script src="/js/modal.js"></script>
   <script src="/js/scada-ui.js"></script>
+  <script src="/js/dispatch-animation.js"></script>
   <script src="/js/app.js"></script>
 </body>
 

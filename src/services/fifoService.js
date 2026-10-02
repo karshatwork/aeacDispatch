@@ -5,7 +5,7 @@ const { generateId } = require('../utils/idGenerator');
 /**
  * Plan and initialize a strict FIFO dispatch session
  */
-async function planDispatch({ modelId, targetType, targetQuantity, operatorUsername }) {
+async function planDispatch({ modelId, targetType, targetQuantity, operatorUsername, operatorFullName }) {
     if (!modelId || !targetType || !targetQuantity || targetQuantity <= 0) {
         throw new Error('Model, target type (boxes/parts), and positive target quantity are required');
     }
@@ -84,6 +84,7 @@ async function planDispatch({ modelId, targetType, targetQuantity, operatorUsern
         dispatchedBoxCount: allocated.length,
         dispatchedPartCount: accumulatedCount,
         operatorUsername,
+        operatorFullName: operatorFullName || operatorUsername,
         startedAt: new Date()
     });
 
@@ -125,14 +126,8 @@ async function verifyScan({ dispatchId, scannedPayload, operatorUsername }) {
     const trimmedScan = scannedPayload.trim();
 
     // Check if the scan matches any allocated box
-    // Matches by exact batchQrData OR contains serial number OR exact batchNumber
-    const matchedBox = tx.allocatedBoxes.find(b => {
-        if (b.batchQrData === trimmedScan) return true;
-        if (b.batchNumber.toString() === trimmedScan) return true;
-        if (trimmedScan.includes(`(${b.batchNumber})`)) return true;
-        if (b.serialNumbers && b.serialNumbers.includes(trimmedScan)) return true;
-        return false;
-    });
+    // Strict match by exact batchQrData payload only
+    const matchedBox = tx.allocatedBoxes.find(b => b.batchQrData === trimmedScan);
 
     if (matchedBox) {
         // Check if already scanned
@@ -188,13 +183,7 @@ async function verifyScan({ dispatchId, scannedPayload, operatorUsername }) {
     }
 
     // If not in allocated list, investigate reason for informative error:
-    const otherBox = await DispatchBox.findOne({
-        $or: [
-            { batchQrData: trimmedScan },
-            { batchNumber: parseInt(trimmedScan, 10) || -1 },
-            { serialNumbers: trimmedScan }
-        ]
-    });
+    const otherBox = await DispatchBox.findOne({ batchQrData: trimmedScan });
 
     if (otherBox) {
         if (otherBox.modelId !== tx.modelId) {
@@ -330,23 +319,42 @@ async function cancelDispatch({ dispatchId, operatorUsername, reason }) {
 }
 
 /**
+ * Auto-cleanup open/dangling in_progress dispatch transactions
+ * Supports filtering by operatorUsername and/or maxAgeMinutes
+ */
+async function autoCleanupOpenDispatches({ reason, operatorUsername = null, maxAgeMinutes = 0 } = {}) {
+    const filter = { status: 'in_progress' };
+    if (operatorUsername) {
+        filter.operatorUsername = operatorUsername;
+    }
+    if (maxAgeMinutes > 0) {
+        const thresholdDate = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
+        filter.startedAt = { $lte: thresholdDate };
+    }
+
+    const defaultReason = reason || 'Session closed automatically due to inactivity or session termination';
+    const activeTxs = await DispatchTransaction.find(filter);
+    if (activeTxs.length === 0) return { closedCount: 0 };
+
+    const now = new Date();
+    for (const tx of activeTxs) {
+        tx.status = 'stale';
+        tx.cancelledAt = now;
+        tx.cancellationReason = defaultReason;
+        await tx.save();
+        console.log(`[AUTO-CLEANUP] Marked open transaction ${tx.dispatchId} (operator: ${tx.operatorUsername}) as STALE: "${defaultReason}"`);
+    }
+
+    return { closedCount: activeTxs.length };
+}
+
+/**
  * Crash recovery: flags any dangling 'in_progress' transactions as 'stale'
  */
 async function recoverStaleTransactions() {
-    const result = await DispatchTransaction.updateMany(
-        { status: 'in_progress' },
-        {
-            $set: {
-                status: 'stale',
-                cancelledAt: new Date(),
-                cancellationReason: 'Application closed or restarted before transaction was completed'
-            }
-        }
-    );
-
-    if (result.modifiedCount > 0) {
-        console.log(`[STALE RECOVERY] Marked ${result.modifiedCount} dangling in_progress transactions as STALE`);
-    }
+    return autoCleanupOpenDispatches({
+        reason: 'Application closed or restarted before transaction was completed'
+    });
 }
 
 module.exports = {
@@ -354,5 +362,7 @@ module.exports = {
     verifyScan,
     confirmDispatch,
     cancelDispatch,
-    recoverStaleTransactions
+    recoverStaleTransactions,
+    autoCleanupOpenDispatches
 };
+

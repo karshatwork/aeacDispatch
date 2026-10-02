@@ -109,6 +109,17 @@ const api = {
     return res;
   },
 
+  async logout() {
+    try {
+      await this.request('/api/auth/logout', { method: 'POST' });
+    } catch (e) {
+      console.warn('Logout notification error:', e.message);
+    } finally {
+      this.clearSession();
+    }
+  },
+
+
   async changePassword(currentPassword, newPassword) {
     return this.request('/api/auth/change-password', {
       method: 'POST',

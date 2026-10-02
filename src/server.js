@@ -12,8 +12,9 @@ const { WebSocketServer } = require('ws');
 const { connectDB } = require('./config/db');
 const { autoSeedAdmin } = require('./services/authService');
 const { startSyncWorker } = require('./services/syncService');
-const { recoverStaleTransactions } = require('./services/fifoService');
+const { recoverStaleTransactions, autoCleanupOpenDispatches } = require('./services/fifoService');
 const { validateLicense, getMachineFingerprint } = require('./utils/licenseEngine');
+
 const scannerService = require('./services/scannerService');
 
 // Route modules
@@ -83,6 +84,17 @@ wss.on('connection', (ws) => {
         type: 'SCANNER_STATUS',
         payload: scannerService.getStatus()
     }));
+
+    // Support simulated scans over WebSocket
+    ws.on('message', (raw) => {
+        try {
+            const data = JSON.parse(raw.toString());
+            if (data.type === 'SIMULATE_SCAN' && data.payload) {
+                const qr = typeof data.payload === 'string' ? data.payload : (data.payload.qrData || data.payload.scannedPayload);
+                if (qr) scannerService.simulateScan(qr);
+            }
+        } catch (e) {}
+    });
 });
 
 // Broadcast helper
@@ -209,6 +221,19 @@ async function bootstrap() {
         // Start background batch sync worker (every 5 minutes / 300000ms)
         const syncInterval = parseInt(process.env.SYNC_INTERVAL_MS || '300000', 10);
         startSyncWorker(syncInterval);
+
+        // Periodic background sweeper for inactive/abandoned in_progress dispatches (runs every 60s)
+        setInterval(async () => {
+            try {
+                await autoCleanupOpenDispatches({
+                    reason: 'Session timed out after 45 minutes of inactivity',
+                    maxAgeMinutes: 45
+                });
+            } catch (e) {
+                console.error('[INACTIVITY SWEEPER ERROR]', e.message);
+            }
+        }, 60000);
+
 
         // Attempt initial COM port connection for scanner
         const comPort = process.env.COM_PORT || 'COM3';

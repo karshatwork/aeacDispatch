@@ -1115,140 +1115,35 @@ body {
 }
 
 /* ==========================================================================
-   VISUAL DISPATCH TRANSFER DOCK (LIGHT INDUSTRIAL CHASSIS)
+   FORM CONTROLS & MODAL INPUTS (PRESERVED ACROSS SYSTEM)
    ========================================================================== */
-.visual-transfer-deck {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-chassis);
-  border-radius: var(--border-radius);
-  padding: 16px 20px;
-  margin-bottom: 16px;
-  box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.1);
-}
-
-.transfer-deck-grid {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 20px;
-}
-
-.transfer-section-title {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  color: var(--text-secondary);
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.transfer-lane {
-  background: #ffffff;
-  border: 1px solid var(--border-panel);
-  border-radius: var(--border-radius-sm);
-  padding: 10px;
-  min-height: 72px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  overflow-x: auto;
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05);
-}
-
-/* 3D-STYLED DISPATCH PARCEL BOX */
-.dispatch-box-item {
-  width: 68px;
-  height: 52px;
-  background: linear-gradient(145deg, #d97706 0%, #b45309 100%);
-  border: 1px solid #f59e0b;
-  border-radius: 2px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.3);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 800;
-  flex-shrink: 0;
-  position: relative;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.dispatch-box-item::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 14px;
-  background: rgba(255, 255, 255, 0.15);
-  border-bottom: 1px dashed rgba(0, 0, 0, 0.25);
-}
-
-.dispatch-box-item.target-pulse {
-  background: linear-gradient(145deg, #0284c7 0%, #0369a1 100%);
-  border-color: #38bdf8;
-  box-shadow: 0 0 10px rgba(2, 132, 199, 0.5);
-}
-
-.dispatch-box-item.loaded-check {
-  background: linear-gradient(145deg, #059669 0%, #047857 100%);
-  border-color: #34d399;
-  box-shadow: 0 0 6px rgba(5, 150, 105, 0.4);
-}
-
-/* TRANSFER SCAN GATE BRIDGE */
-.transfer-gate-bridge {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 90px;
-  position: relative;
-}
-
-.gate-beam-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  background: #ffffff;
-  border: 2px solid var(--color-primary);
-  color: var(--color-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 20px;
-  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.25);
-  animation: radar-ping 2s infinite ease-in-out;
-}
-
-.gate-beam-arrow {
-  color: var(--color-primary);
-  font-size: 16px;
-  margin-top: 4px;
-}
-
-/* FORM CONTROLS */
 .form-group {
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .form-label {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--text-secondary);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
-.form-control {
+.form-label span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-control,
+textarea.form-control,
+select.form-control,
+input.form-control {
   width: 100%;
+  box-sizing: border-box;
   padding: 8px 12px;
   background: #ffffff;
   border: 1px solid var(--border-panel);
@@ -1257,138 +1152,221 @@ body {
   font-size: 13px;
   color: var(--text-main);
   box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.form-control:focus {
+/* Inputs with embedded leading icons */
+.input-with-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-with-icon > i {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  font-size: 14px;
+  pointer-events: none;
+  line-height: 1;
+  z-index: 2;
+}
+
+.input-with-icon > input.form-control {
+  padding-left: 34px !important;
+}
+
+textarea.form-control {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 74px;
+}
+
+.form-control:focus,
+textarea.form-control:focus,
+select.form-control:focus,
+input.form-control:focus {
   outline: none;
   border-color: var(--color-primary);
   box-shadow: 0 0 0 3px var(--color-primary-glow), inset 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 /* ==========================================================================
-   VIEW 1: DISPATCH TERMINAL DECK LAYOUT
+   UNIFIED ACTIVE DISPATCH COCKPIT PANEL (MATCHING SCADA SYSTEM THEME)
    ========================================================================== */
-.dispatch-control-deck {
-  display: grid;
-  grid-template-columns: 360px 1fr;
-  gap: 16px;
-  margin-bottom: 16px;
+.telemetry-meta-specs-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
-/* RADIAL GAUGE HUD CARD */
-.hud-telemetry-card {
-  background: #ffffff;
-  border: 1px solid var(--border-panel);
-  border-radius: var(--border-radius);
-  padding: 20px;
-  color: var(--text-main);
-  box-shadow: var(--bevel-panel);
+.specs-sep {
+  color: var(--border-chassis);
+}
+
+.dispatch-telemetry-body-grid {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 20px;
+  align-items: center;
+}
+
+@media (max-width: 1024px) {
+  .dispatch-telemetry-body-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.live-beacon {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--color-success);
+  box-shadow: 0 0 8px var(--color-success);
+  animation: pulse-beacon 1.8s infinite ease-in-out;
+  display: inline-block;
+}
+
+@keyframes pulse-beacon {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.telemetry-progress-column {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  position: relative;
-  overflow: hidden;
-}
-
-.gauge-wrap {
-  position: relative;
-  width: 170px;
-  height: 170px;
-  display: flex;
-  align-items: center;
   justify-content: center;
-  margin: 10px 0;
 }
 
-.gauge-svg {
-  transform: rotate(-90deg);
-  width: 170px;
-  height: 170px;
+.telemetry-metrics-row {
+  display: flex;
+  justify-content: space-around;
+  margin-bottom: 6px;
 }
 
-.gauge-bg-circle {
-  stroke: #e2e8f0;
-  stroke-width: 12;
-  fill: transparent;
-}
-
-.gauge-val-circle {
-  stroke: var(--color-primary);
-  stroke-width: 12;
-  stroke-linecap: round;
-  fill: transparent;
-  stroke-dasharray: 440;
-  stroke-dashoffset: 440;
-  transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.gauge-center-text {
-  position: absolute;
+.telemetry-metric-pill {
   text-align: center;
 }
 
-.gauge-percent {
+.metric-label {
+  display: block;
   font-family: var(--font-mono);
-  font-size: 32px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.metric-val {
+  font-family: var(--font-mono);
+  font-size: 16px;
   font-weight: 800;
-  color: var(--text-heading);
   line-height: 1;
 }
 
-.gauge-subtext {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--color-primary);
-  letter-spacing: 0.1em;
-  margin-top: 4px;
+.text-cyan { color: #0284c7; }
+.text-emerald { color: #059669; }
+.text-primary { color: var(--color-primary); }
+
+.telemetry-progress-track {
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+  margin-bottom: 0;
+  border: 1px solid rgba(0, 0, 0, 0.04);
 }
 
-/* NEXT TARGET BOX RADAR RETICLE */
-.radar-target-reticle {
-  width: 100%;
+.telemetry-progress-fill {
+  height: 100%;
+  background: #0284c7;
+  border-radius: 3px;
+  position: relative;
+  transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease;
+}
+
+.telemetry-sub-status {
+  display: none;
+}
+
+/* Recommended Next FIFO Target Guidance Card */
+.telemetry-fifo-guidance-card {
   background: var(--bg-panel-subtle);
   border: 1px solid var(--border-panel);
   border-radius: var(--border-radius-sm);
-  padding: 12px;
-  position: relative;
-  margin-top: 10px;
-}
-
-.reticle-corner {
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  border-color: var(--color-primary);
-  border-style: solid;
-}
-.reticle-tl { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
-.reticle-tr { top: -1px; right: -1px; border-width: 2px 2px 0 0; }
-.reticle-bl { bottom: -1px; left: -1px; border-width: 0 0 2px 2px; }
-.reticle-br { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
-
-.reticle-header {
-  font-size: 10px;
-  font-family: var(--font-mono);
-  color: var(--color-primary);
+  padding: 8px 14px;
   display: flex;
-  justify-content: space-between;
-  margin-bottom: 6px;
-  font-weight: 700;
+  flex-direction: column;
+  justify-content: center;
 }
 
-.reticle-batch-num {
-  font-size: 20px;
+.fifo-guidance-header {
+  font-size: 9.5px;
   font-family: var(--font-mono);
   font-weight: 800;
-  color: var(--text-heading);
+  letter-spacing: 0.04em;
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
 }
 
-.reticle-sub {
-  font-size: 11px;
+.fifo-target-inline-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.fifo-batch-hero {
+  font-size: 17px;
+  font-weight: 900;
+  font-family: var(--font-mono);
+  color: var(--text-heading);
+  white-space: nowrap;
+  line-height: 1.1;
+}
+
+.fifo-sub-hero {
+  font-size: 11.5px;
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  margin-top: 2px;
+  white-space: nowrap;
+  line-height: 1.1;
+}
+/* Note: Staging bay warehouse animation entity & styles are fully encapsulated in /js/dispatch-animation.js */
+
+/* Bottom Action Bar */
+.dispatch-actions-deck {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid var(--border-panel);
+  padding-top: 14px;
+}
+
+.table-legend-hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+/* Backwards-compatible legacy classes */
+.visual-transfer-deck {
+  display: none;
+}
+.transfer-lane {
+  background: #ffffff;
 }
 
 /* ALLOCATED BOX QUEUE CARDS */
@@ -1731,7 +1709,7 @@ body {
 .grid-4 > .stat-tile:nth-child(3) { border-left-color: var(--color-warning); }
 .grid-4 > .stat-tile:nth-child(4) { border-left-color: var(--color-danger); }
 
-.grid-3 > .stat-tile:nth-child(1) { border-left-color: #0891b2; }
+.grid-3 > .stat-tile:nth-child(1) { border-left-color: #5e3ca5; }
 .grid-3 > .stat-tile:nth-child(2) { border-left-color: var(--color-primary); }
 .grid-3 > .stat-tile:nth-child(3) { border-left-color: var(--color-success); }
 
