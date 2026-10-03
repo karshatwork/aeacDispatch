@@ -81,47 +81,138 @@
   </div>
 
   <!-- ========================================================================
+       FULL-SCREEN SCADA LICENSE LOCKOUT SCREEN
+       Halted immediately after splash screen if license verification fails.
+       Locks the system, hides the login screen, and prevents any boot.
+       ======================================================================== -->
+  <div id="license-lock-screen" style="display: none;">
+    <div class="lock-card">
+      <div class="lock-brand-strip">
+        <div class="lock-brand-left">
+          <img src="/assets/favicon.ico" class="rail-favicon" alt="RecordKeeper">
+          <div class="rail-brand-meta">
+            <div class="rail-brand-text">Record<span class="brand-accent">Keeper</span></div>
+            <div class="rail-brand-tagline">DISPATCH MANAGEMENT</div>
+          </div>
+        </div>
+        <div class="lock-security-badge">
+          <span class="lock-pulse-dot"></span>
+          <span>SECURITY GATE</span>
+        </div>
+      </div>
+
+      <div class="lock-alert-box">
+        <div class="lock-alert-icon">
+          <i class="ri-shield-keyhole-line"></i>
+        </div>
+        <div class="lock-alert-content">
+          <div class="lock-alert-status-row">
+            <span class="lock-alert-badge" id="lock-badge-text">UNLICENSED SYSTEM</span>
+            <span class="lock-alert-code" id="lock-error-code">SEC-ERR-403</span>
+          </div>
+          <h2 class="lock-alert-title" id="lock-issue-title">NO VALID LICENSE INSTALLED</h2>
+          <p class="lock-alert-desc" id="lock-issue-desc">
+            No license key installed on this system. System execution is halted.
+          </p>
+        </div>
+      </div>
+
+      <!-- MACHINE FINGERPRINT SECTION -->
+      <div class="lock-fp-panel">
+        <div class="lock-fp-header">
+          <span class="lock-fp-title"><i class="ri-fingerprint-line"></i> HOST MACHINE FINGERPRINT</span>
+        </div>
+        <div class="lock-fp-box">
+          <span id="lock-machine-code" class="lock-fp-text">DETECTING HARDWARE...</span>
+          <button type="button" class="btn-scada btn-primary lock-copy-btn" id="lock-copy-btn" onclick="copyLockMachineCode()">
+            <i class="ri-file-copy-line"></i> COPY CODE
+          </button>
+        </div>
+        <div class="lock-fp-instructions">
+          <i class="ri-information-line"></i> Provide this Machine Fingerprint to your vendor to generate an authorized <code class="scada-code">license.key</code>.
+        </div>
+      </div>
+
+      <!-- ACTION CONTROLS: LOAD LICENSE FILE -->
+      <div class="lock-actions-container">
+        <button type="button" class="btn-scada btn-primary lock-load-file-btn" onclick="triggerLicenseFileInput()">
+          <i class="ri-file-upload-line"></i> LOAD LICENSE FILE...
+        </button>
+        <input type="file" id="lock-license-file-input" style="display: none;" accept=".key,.lic,text/plain" onchange="handleLicenseFileSelected(event)">
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
        FULL-SCREEN MODERN SCADA LOGIN SCREEN
+       Precision Industrial Blueprint Atmosphere & Outside Co-brand Plate
        ======================================================================== -->
   <div id="login-screen">
-    <div class="login-card">
-      <div class="login-header-logos">
-        <img src="/assets/logo-left.png" alt="Elektrosil" class="login-logo">
-        <img src="/assets/logo-right.png" alt="Mahindra" class="login-logo">
-      </div>
-      <div class="login-title">DISPATCH MANAGEMENT SYSTEM</div>
-      <div class="login-subtitle">Login</div>
+    <div class="login-wrapper">
 
-
-      <div id="login-error"
-        style="display: none; background: #fef2f2; border: 1px solid #fca5a5; color: #dc2626; padding: 8px 12px; font-family: var(--font-mono); font-size: 11px; margin-bottom: 14px; border-radius: var(--border-radius-sm); font-weight: 600;">
-      </div>
-
-      <!-- DATABASE STATUS WARNING ON LOGIN SCREEN -->
-      <div id="login-db-warning"
-        style="display: none; background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; padding: 10px 12px; font-family: var(--font-mono); font-size: 11px; margin-bottom: 14px; border-radius: var(--border-radius-sm); line-height: 1.4;">
-        <div style="font-weight: 700; display: flex; align-items: center; gap: 6px; color: #dc2626;">
-          <i class="ri-alert-line" style="font-size: 14px;"></i> DATABASE OFFLINE (SAFE MODE)
-        </div>
-        <div id="login-db-warning-text" style="font-size: 10px; margin-top: 4px; color: #475569;">
-          Cannot reach MongoDB. Safe mode active.
+      <!-- CO-BRAND / PARTNER LOGOS PLATE (OUTSIDE CARD, CENTERED) -->
+      <div class="login-masthead">
+        <div class="login-partner-logos-plate">
+          <div class="login-logo-slot slot-dark" title="RecordKeeper Platform">
+            <img src="/assets/logo-left.png" alt="RecordKeeper" class="login-masthead-logo">
+          </div>
+          <div class="login-logo-vdiv"></div>
+          <div class="login-logo-slot slot-light" title="Karsh Industrial Solutions">
+            <img src="/assets/logo-right.png" alt="Karsh" class="login-masthead-logo">
+          </div>
         </div>
       </div>
 
-      <form id="login-form" novalidate>
-        <div class="form-group">
-          <label class="form-label"><i class="ri-user-line"></i> OPERATOR USERNAME</label>
-          <input type="text" id="login-username" class="form-control" placeholder="Enter username (e.g. admin)"
-            autofocus>
+      <!-- MAIN OPERATOR LOGIN CONSOLE CARD -->
+      <div class="login-card">
+        <div class="login-card-header">
+          <div class="login-brand-group">
+            <img src="/assets/favicon.ico" class="rail-favicon" alt="RecordKeeper">
+            <div class="rail-brand-meta">
+              <div class="rail-brand-text">Record<span class="brand-accent">Keeper</span></div>
+              <div class="rail-brand-tagline">DISPATCH MANAGEMENT</div>
+            </div>
+          </div>
         </div>
-        <div class="form-group" style="margin-bottom: 24px;">
-          <label class="form-label"><i class="ri-lock-line"></i> PASSWORD</label>
-          <input type="password" id="login-password" class="form-control" placeholder="Enter password">
+
+        <div id="login-error"
+          style="display: none; background: #fef2f2; border: 1px solid #fca5a5; color: #dc2626; padding: 10px 14px; font-family: var(--font-mono); font-size: 11px; margin-bottom: 16px; border-radius: var(--border-radius-sm); font-weight: 600;">
         </div>
-        <button type="submit" class="btn-scada btn-primary" style="width: 100%; padding: 11px; font-size: 13px;">
-          <i class="ri-login-box-line"></i> AUTHENTICATE TO GATEWAY
-        </button>
-      </form>
+
+        <!-- DATABASE STATUS WARNING ON LOGIN SCREEN -->
+        <div id="login-db-warning"
+          style="display: none; background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; padding: 10px 14px; font-family: var(--font-mono); font-size: 11px; margin-bottom: 16px; border-radius: var(--border-radius-sm); line-height: 1.4;">
+          <div style="font-weight: 700; display: flex; align-items: center; gap: 6px; color: #dc2626;">
+            <i class="ri-alert-line" style="font-size: 14px;"></i> DATABASE OFFLINE (SAFE MODE)
+          </div>
+          <div id="login-db-warning-text" style="font-size: 10px; margin-top: 4px; color: #475569;">
+            Cannot reach MongoDB. Safe mode active.
+          </div>
+        </div>
+
+        <form id="login-form" novalidate>
+          <div class="form-group" style="margin-bottom: 16px;">
+            <label class="form-label"><i class="ri-user-line"></i> USERNAME</label>
+            <input type="text" id="login-username" class="form-control" placeholder="Enter username (e.g. admin)" autofocus>
+          </div>
+          <div class="form-group" style="margin-bottom: 24px;">
+            <label class="form-label"><i class="ri-lock-line"></i> PASSWORD</label>
+            <input type="password" id="login-password" class="form-control" placeholder="Enter password">
+          </div>
+          <button type="submit" class="btn-scada btn-primary login-submit-btn">
+            <span>LOG IN</span>
+            <i class="ri-arrow-right-line"></i>
+          </button>
+        </form>
+      </div>
+
+      <!-- CENTER-BOTTOM COPYRIGHT ATTRIBUTION -->
+      <div class="login-copyright">
+        <a href="mailto:work.karsh@gmail.com" class="login-copyright-link" onclick="handleMailtoClick(event, 'mailto:work.karsh@gmail.com')" title="Contact Karsh: work.karsh@gmail.com">
+          &copy; Karsh
+        </a>
+      </div>
+
     </div>
   </div>
 
@@ -1716,57 +1807,51 @@
   </div>
 
   <!-- ========================================================================
-       SOFTWARE LICENSE AGREEMENT & EULA MODAL
+       SOFTWARE LICENSE AGREEMENT & EULA MODAL (DYNAMIC DIRECT FILE VIEWER)
        ======================================================================== -->
   <div id="eula-modal" class="custom-modal-backdrop" style="display: none;"
     onclick="if(event.target === this) closeEulaModal()">
-    <div class="custom-modal-card" style="max-width: 620px; width: 90%;">
-      <div class="custom-modal-header">
+    <div class="custom-modal-card" style="max-width: 820px; width: 94%; max-height: 90vh; display: flex; flex-direction: column;">
+      <div class="custom-modal-header" style="flex-shrink: 0;">
         <div class="custom-modal-icon-wrap icon-primary">
-          <i class="ri-file-text-line"></i>
+          <i class="ri-file-shield-2-line"></i>
         </div>
         <div style="flex: 1;">
-          <div class="custom-modal-title">SOFTWARE LICENSE AGREEMENT &amp; EULA</div>
-          <div class="custom-modal-subtitle">
-            End-User License Agreement &bull; Terms and Conditions
-          </div>
+          <div class="custom-modal-title">LEGAL AGREEMENTS &amp; SOFTWARE LICENSING</div>
+          
         </div>
         <button type="button" class="custom-modal-close-btn" onclick="closeEulaModal()" title="Close">
           <i class="ri-close-line"></i>
         </button>
       </div>
-      <div class="custom-modal-body" style="padding-top: 14px;">
-        <div class="eula-container"
-          style="background: #ffffff; border: 1px solid var(--border-light); padding: 16px; max-height: 320px; overflow-y: auto; font-size: 11px; line-height: 1.6; color: #334155; font-family: var(--font-mono); border-radius: var(--border-radius-sm);">
-          <div
-            style="font-weight: 800; font-size: 12px; color: #0f172a; margin-bottom: 10px; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">
-            RECORDKEEPER DISPATCH &bull; SOFTWARE LICENSE AGREEMENT &amp; EULA
-          </div>
-          <p style="margin-bottom: 10px; font-weight: 600; color: #475569;">
-            [END-USER LICENSE AGREEMENT (EULA) — TERMS AND CONDITIONS]
-          </p>
-          <p style="margin-bottom: 10px;">
-            1. GRANT OF LICENSE: RecordKeeper hereby grants the licensee a non-exclusive, non-transferable, single-node workstation license to utilize this Dispatch Management System solely on authorized hardware terminals matching the designated cryptographic machine fingerprint.
-          </p>
-          <p style="margin-bottom: 10px;">
-            2. APPLIANCE INTEGRITY &amp; SECURITY: The software, including its cryptographic licensing engine, automated hardware COM-scanner bridge, and database sync services, is locked and verified with cryptographic hardware signatures. Unauthorized modification, reverse engineering, or circumvention of licensing mechanisms is strictly prohibited.
-          </p>
-          <p style="margin-bottom: 10px;">
-            3. AUDIT TRAIL &amp; DATA INTEGRITY: All barcode scanning events, hold/quarantine actions, reject entries, and dispatch transactions are cryptographically recorded in the immutable audit trail for shop-floor compliance and industrial traceability.
-          </p>
-          <p style="margin-bottom: 10px;">
-            4. OPERATIONAL COMPLIANCE: The software is configured for strict First-In First-Out (FIFO) staging and quality control. Authorized operators and supervisors are responsible for verifying physical box barcodes against staging manifests in accordance with plant Standard Operating Procedures (SOP).
-          </p>
-          <p
-            style="color: #64748b; font-size: 10px; margin-top: 14px; border-top: 1px dashed #cbd5e1; padding-top: 8px;">
-            &copy; 2026 RecordKeeper Dispatch. All Rights Reserved.
-          </p>
 
+      <!-- Legal Document Navigation Tabs -->
+      <div class="eula-tab-bar">
+        <button type="button" id="tab-btn-eula" class="eula-tab active" onclick="switchLegalDoc('eula')">
+          <i class="ri-file-text-line"></i> END USER LICENSE AGREEMENT
+        </button>
+        <button type="button" id="tab-btn-license" class="eula-tab" onclick="switchLegalDoc('license')">
+          <i class="ri-shield-keyhole-line"></i> MASTER LICENSE AGREEMENT
+        </button>
+      </div>
+
+      <!-- Scrollable Dynamic Markdown Container -->
+      <div class="custom-modal-body" style="padding: 16px 20px; flex: 1; overflow: hidden; display: flex; flex-direction: column;">
+        <div id="eula-doc-container" class="eula-container">
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; color: #64748b;">
+            <i class="ri-loader-4-line ri-spin" style="margin-bottom: 8px; font-size: 20px; color: #0284c7;"></i>
+            <span style="font-family: var(--font-mono); font-size: 11px;">Streaming legal agreement directly from filesystem...</span>
+          </div>
         </div>
       </div>
-      <div class="custom-modal-actions" style="display: flex; justify-content: flex-end;">
-        <button class="btn-scada btn-success" onclick="closeEulaModal()" style="min-width: 120px;">
-          <i class="ri-checkbox-circle-line"></i> I AGREE
+
+      <!-- Modal Footer -->
+      <div class="custom-modal-actions" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-top: 1px solid var(--border-light); flex-shrink: 0;">
+        <span id="eula-doc-source" style="font-size: 10px; color: #64748b; font-family: var(--font-mono);">
+          <i class="ri-file-code-line"></i> Source: <strong>EULA.md</strong>
+        </span>
+        <button class="btn-scada btn-success" onclick="closeEulaModal()" style="min-width: 140px;">
+          <i class="ri-checkbox-circle-line"></i> I UNDERSTAND &amp; AGREE
         </button>
       </div>
     </div>

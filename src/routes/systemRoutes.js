@@ -49,8 +49,69 @@ router.get('/health', async (req, res) => {
     });
 });
 
-// GET /api/system/status - Overview of system health, DB connection, and sync state
-router.get('/status', authenticate, async (req, res) => {
+// Helper to locate project legal markdown files across dev and packaged runtimes
+function findLegalDocument(filename) {
+    const candidates = [
+        path.join(process.cwd(), filename),
+        path.join(__dirname, '../../', filename),
+        path.join(__dirname, '../', filename),
+        path.join(__dirname, '../../../', filename),
+        process.execPath ? path.join(path.dirname(process.execPath), filename) : null,
+        process.execPath ? path.join(path.dirname(process.execPath), 'resources', 'app', filename) : null
+    ].filter(Boolean);
+
+    for (const p of candidates) {
+        if (fs.existsSync(p)) return p;
+    }
+    return null;
+}
+
+// GET /api/system/legal - Return raw content of EULA.md and LICENSE.md directly from filesystem
+router.get('/legal', (req, res) => {
+    try {
+        const eulaPath = findLegalDocument('EULA.md');
+        const licensePath = findLegalDocument('LICENSE.md');
+
+        const eula = eulaPath ? fs.readFileSync(eulaPath, 'utf8') : '# EULA Not Found\n\nUnable to locate `EULA.md` on this installation.';
+        const license = licensePath ? fs.readFileSync(licensePath, 'utf8') : '# LICENSE Not Found\n\nUnable to locate `LICENSE.md` on this installation.';
+
+        res.json({
+            success: true,
+            documents: {
+                eula,
+                license
+            },
+            paths: {
+                eula: eulaPath,
+                license: licensePath
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// POST /api/system/license/activate - Activate/install a new license key
+router.post('/license/activate', async (req, res) => {
+    try {
+        const { licenseKey } = req.body;
+        if (!licenseKey) {
+            return res.status(400).json({ success: false, error: 'License key content is required' });
+        }
+        const result = activateLicense(licenseKey);
+        res.json({
+            success: true,
+            message: result.message,
+            payload: result.payload,
+            machineCode: result.machineCode
+        });
+    } catch (err) {
+        res.status(400).json({ success: false, error: err.message });
+    }
+});
+
+// GET /api/system/status - Overview of system health, DB connection, and sync state (Admin only)
+router.get('/status', authenticate, requireRole('admin'), async (req, res) => {
     try {
         const dbStatus = getStatus();
         let syncState = null;
@@ -79,8 +140,8 @@ router.get('/status', authenticate, async (req, res) => {
     }
 });
 
-// POST /api/system/db-test - Test connection parameters without persisting
-router.post('/db-test', authenticate, requireRole('manager'), async (req, res) => {
+// POST /api/system/db-test - Test connection parameters without persisting (Admin only)
+router.post('/db-test', authenticate, requireRole('admin'), async (req, res) => {
     try {
         const { mongoUri } = req.body;
         if (!mongoUri) {
@@ -534,8 +595,8 @@ router.get('/reasons', authenticate, async (req, res) => {
     }
 });
 
-// POST /api/system/reasons - Update hold or rejection reasons
-router.post('/reasons', authenticate, requireRole('supervisor'), async (req, res) => {
+// POST /api/system/reasons - Update hold or rejection reasons (Admin only)
+router.post('/reasons', authenticate, requireRole('admin'), async (req, res) => {
     try {
         const { holdReasons, rejectionReasons } = req.body;
 

@@ -192,11 +192,18 @@ module.exports = require('./server.jsc');
     console.log('  [OK] Embedded preload.js');
   }
 
-  // 6. Copy frontend UI, icons, fonts, assets
-  console.log('\n[6/9] Copying frontend UI, Remixicon fonts, and branding assets...');
+  // 6. Copy frontend UI, icons, fonts, assets, and legal agreements
+  console.log('\n[6/9] Copying frontend UI, Remixicon fonts, branding assets, and legal agreements...');
   copyRecursive(path.join(rootDir, 'public'), path.join(appResourceDir, 'public'));
   copyRecursive(path.join(rootDir, 'assets'), path.join(appResourceDir, 'assets'));
-  console.log('  [OK] public/ and assets/ copied to app resources');
+  for (const doc of ['EULA.md', 'LICENSE.md']) {
+    const docSrc = path.join(rootDir, doc);
+    if (fs.existsSync(docSrc)) {
+      fs.copyFileSync(docSrc, path.join(releaseDir, doc));
+      fs.copyFileSync(docSrc, path.join(appResourceDir, doc));
+    }
+  }
+  console.log('  [OK] public/, assets/, EULA.md, and LICENSE.md copied to release package');
 
   // 7. Configure production package.json and node_modules
   console.log('\n[7/9] Packaging production node_modules into app resources...');

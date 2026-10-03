@@ -322,10 +322,216 @@ window.confirm = (msg) => {
   return true;
 };
 
-// Global EULA Modal Handlers
-window.openEulaModal = function () {
+// ============================================================================
+// DYNAMIC LEGAL DOCUMENTS VIEWER (EULA.md & LICENSE.md DIRECT RENDERER)
+// ============================================================================
+let _cachedLegalDocs = {
+  eula: null,
+  license: null,
+  currentDoc: 'eula',
+  sourceInfo: ''
+};
+
+function renderLegalMarkdown(markdownText) {
+  if (!markdownText) {
+    return '<div style="color: #64748b; padding: 20px; text-align: center;"><i class="ri-error-warning-line"></i> Document content not available.</div>';
+  }
+
+  const lines = markdownText.replace(/\r\n/g, '\n').split('\n');
+  let html = '';
+  let inUl = false;
+  let inOl = false;
+  let paragraphLines = [];
+
+  function flushParagraph() {
+    if (paragraphLines.length > 0) {
+      const fullText = paragraphLines.join('<br>').trim();
+      if (fullText) {
+        if (fullText.includes('CAREFULLY READ') || fullText.includes('IMPORTANT — READ CAREFULLY')) {
+          html += `<div style="background: #fffbeb; border-left: 3px solid #f59e0b; padding: 10px 14px; margin: 12px 0; font-weight: 600; color: #92400e; border-radius: 2px;">${formatInline(fullText)}</div>`;
+        } else {
+          html += `<p class="eula-p">${formatInline(fullText)}</p>`;
+        }
+      }
+      paragraphLines = [];
+    }
+  }
+
+  function closeLists() {
+    if (inUl) { html += '</ul>'; inUl = false; }
+    if (inOl) { html += '</ol>'; inOl = false; }
+  }
+
+  function formatInline(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/&lt;br&gt;/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/`([^`]+)`/g, '<code class="eula-inline-code">$1</code>');
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+
+    if (!line) {
+      flushParagraph();
+      closeLists();
+      continue;
+    }
+
+    if (line === '---' || line === '***') {
+      flushParagraph();
+      closeLists();
+      html += '<hr class="eula-hr">';
+      continue;
+    }
+
+    if (line.startsWith('# ')) {
+      flushParagraph();
+      closeLists();
+      html += `<h1 class="eula-h1">${formatInline(line.substring(2))}</h1>`;
+      continue;
+    }
+
+    if (line.startsWith('## ')) {
+      flushParagraph();
+      closeLists();
+      html += `<h2 class="eula-h2">${formatInline(line.substring(3))}</h2>`;
+      continue;
+    }
+
+    if (line.startsWith('### ')) {
+      flushParagraph();
+      closeLists();
+      html += `<h3 class="eula-h3">${formatInline(line.substring(4))}</h3>`;
+      continue;
+    }
+
+    // Unordered list item
+    const ulMatch = line.match(/^[-*]\s+(.*)$/);
+    if (ulMatch) {
+      flushParagraph();
+      if (inOl) { html += '</ol>'; inOl = false; }
+      if (!inUl) { html += '<ul class="eula-ul">'; inUl = true; }
+      html += `<li>${formatInline(ulMatch[1])}</li>`;
+      continue;
+    }
+
+    // Ordered list item
+    const olMatch = line.match(/^(\d+)\.\s+(.*)$/);
+    if (olMatch) {
+      flushParagraph();
+      if (inUl) { html += '</ul>'; inUl = false; }
+      if (!inOl) { html += '<ol class="eula-ol">'; inOl = true; }
+      html += `<li>${formatInline(olMatch[2])}</li>`;
+      continue;
+    }
+
+    paragraphLines.push(line);
+  }
+
+  flushParagraph();
+  closeLists();
+
+  return html;
+}
+
+window.loadLegalDocuments = async function () {
+  const container = document.getElementById('eula-doc-container');
+  const sourceLabel = document.getElementById('eula-doc-source');
+
+  try {
+    // 1. First attempt: Direct Electron IPC filesystem bridge
+    if (window.electronAPI && typeof window.electronAPI.readLegalDocument === 'function') {
+      const eulaRes = await window.electronAPI.readLegalDocument('eula');
+      const licRes = await window.electronAPI.readLegalDocument('license');
+
+      _cachedLegalDocs.eula = eulaRes.success ? eulaRes.content : (eulaRes.error || 'Failed to read EULA.md');
+      _cachedLegalDocs.license = licRes.success ? licRes.content : (licRes.error || 'Failed to read LICENSE.md');
+      _cachedLegalDocs.sourceInfo = 'Workstation Direct File Reader';
+      return;
+    }
+
+    // 2. Second attempt: Backend REST endpoint (/api/system/legal)
+    let res;
+    if (typeof api !== 'undefined' && typeof api.request === 'function') {
+      res = await api.request('/api/system/legal');
+    } else {
+      const port = (window.electronAPI && window.electronAPI.serverPort) || location.port || '4000';
+      const response = await fetch(`http://127.0.0.1:${port}/api/system/legal`);
+      res = await response.json();
+    }
+
+    if (res && res.success && res.documents) {
+      _cachedLegalDocs.eula = res.documents.eula;
+      _cachedLegalDocs.license = res.documents.license;
+      _cachedLegalDocs.sourceInfo = 'Server Direct File Stream';
+    } else {
+      throw new Error((res && res.error) || 'Failed to load legal agreements');
+    }
+  } catch (err) {
+    console.error('[LEGAL VIEWER] Failed to load documents:', err);
+    _cachedLegalDocs.eula = `# Legal Agreement Loading Error\n\nUnable to read file directly: ${err.message}`;
+    _cachedLegalDocs.license = `# License Loading Error\n\nUnable to read file directly: ${err.message}`;
+  }
+};
+
+window.switchLegalDoc = function (docType) {
+  _cachedLegalDocs.currentDoc = docType;
+  const container = document.getElementById('eula-doc-container');
+  const sourceLabel = document.getElementById('eula-doc-source');
+  const tabEula = document.getElementById('tab-btn-eula');
+  const tabLic = document.getElementById('tab-btn-license');
+
+  if (tabEula && tabLic) {
+    if (docType === 'license') {
+      tabLic.classList.add('active');
+      tabEula.classList.remove('active');
+    } else {
+      tabEula.classList.add('active');
+      tabLic.classList.remove('active');
+    }
+  }
+
+  const rawDoc = docType === 'license' ? _cachedLegalDocs.license : _cachedLegalDocs.eula;
+  const filename = docType === 'license' ? 'LICENSE.md' : 'EULA.md';
+
+  if (container) {
+    container.innerHTML = renderLegalMarkdown(rawDoc);
+    container.scrollTop = 0;
+  }
+
+  if (sourceLabel) {
+    sourceLabel.innerHTML = `<i class="ri-file-code-line"></i> Source: <strong>${filename}</strong>`;
+  }
+};
+
+window.openEulaModal = async function (initialDoc = 'eula') {
   const modal = document.getElementById('eula-modal');
   if (modal) modal.style.display = 'flex';
+
+  const container = document.getElementById('eula-doc-container');
+  const hasError = _cachedLegalDocs.eula && _cachedLegalDocs.eula.includes('Legal Agreement Loading Error');
+  if (hasError) {
+    _cachedLegalDocs.eula = null;
+    _cachedLegalDocs.license = null;
+  }
+
+  if (container && (!_cachedLegalDocs.eula || !_cachedLegalDocs.license)) {
+    container.innerHTML = `
+      <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 50px 20px; color: #64748b;">
+        <i class="ri-loader-4-line ri-spin" style="font-size: 24px; color: #0284c7; margin-bottom: 10px;"></i>
+        <div style="font-family: var(--font-mono); font-size: 11px; font-weight: 600;">Streaming markdown document directly from disk...</div>
+      </div>
+    `;
+  }
+
+  await window.loadLegalDocuments();
+  window.switchLegalDoc(initialDoc || _cachedLegalDocs.currentDoc || 'eula');
 };
 
 window.closeEulaModal = function () {

@@ -200,7 +200,7 @@ function outputLicense(machineCode, customerName, expiresAt, features, outputFil
         console.log(`  Machine Code:    \x1b[36m${machineCode}\x1b[0m`);
         console.log(`  Expiration:      \x1b[35m${expiresAt}\x1b[0m`);
         console.log(`  Features:        ${features.join(', ')}`);
-        console.log(`  Verification:    \x1b[32m${test.valid ? 'VALID (HMAC-SHA256 Cryptographically Signed)' : 'INVALID'}\x1b[0m`);
+        console.log(`  Verification:    \x1b[32m${test.valid ? 'VALID (RSA-2048 Cryptographically Signed & Verified)' : 'INVALID: ' + test.error}\x1b[0m`);
         console.log('================================================================\n');
     } catch (err) {
         console.error(`\n[ERROR] Failed to generate license: ${err.message}`);

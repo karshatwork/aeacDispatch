@@ -14,5 +14,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   serverPort: ipcRenderer.sendSync('get-server-port-sync'),
   isElectron: true,
   // Print an HTML string to PDF (Electron-native, no print dialog)
-  printToPDF: (html, filename) => ipcRenderer.invoke('print-to-pdf', { html, filename })
+  printToPDF: (html, filename) => ipcRenderer.invoke('print-to-pdf', { html, filename }),
+  // Open external link or mailto in default OS application
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  // Direct legal markdown file reader
+  readLegalDocument: (docType) => ipcRenderer.invoke('read-legal-document', docType)
 });

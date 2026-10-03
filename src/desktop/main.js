@@ -166,6 +166,21 @@ function createMainWindow() {
     });
   }
 
+  // Handle mailto: and external links via system default browser / mail client
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('mailto:') || url.startsWith('http:') || url.startsWith('https:')) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url.startsWith('mailto:') || (url.startsWith('http:') && !url.includes('localhost') && !url.includes('127.0.0.1'))) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
+
   // Load via secure custom scheme app://
   mainWindow.loadURL('app://dispatch/index.html');
 
@@ -220,10 +235,10 @@ app.whenReady().then(async () => {
 
   const SERVER_PORT = process.env.PORT || '4000';
 
-  // Only generate desktop secret and lock down the backend when running as a
-  // packaged production executable. In dev mode (npm run electron / npm run dev)
-  // the browser should still be able to open localhost for debugging.
-  if (isPackaged) {
+  // Generate desktop secret and lock down backend in production mode or packaged exe.
+  // In development mode (NODE_ENV=development), browser can still open localhost for dev.
+  const isProduction = isPackaged || process.env.NODE_ENV === 'production';
+  if (isProduction) {
     const DESKTOP_SECRET = crypto.randomBytes(32).toString('hex');
     process.env.DESKTOP_SECRET = DESKTOP_SECRET;
 
@@ -323,6 +338,33 @@ ipcMain.handle('open-license-folder', async () => {
   const targetDir = isPackaged ? path.dirname(process.execPath) : process.cwd();
   await shell.openPath(targetDir);
   return true;
+});
+
+ipcMain.handle('read-legal-document', async (_event, docType) => {
+  const filename = docType === 'license' ? 'LICENSE.md' : 'EULA.md';
+  const candidates = [
+    path.join(rootDir, filename),
+    path.join(process.cwd(), filename),
+    path.join(__dirname, '..', '..', filename),
+    path.join(__dirname, '..', filename),
+    isPackaged ? path.join(path.dirname(process.execPath), filename) : null,
+    isPackaged ? path.join(path.dirname(process.execPath), 'resources', 'app', filename) : null
+  ].filter(Boolean);
+
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      return { success: true, filename, content: fs.readFileSync(p, 'utf8'), path: p };
+    }
+  }
+  return { success: false, filename, error: `${filename} not found on workstation filesystem.` };
+});
+
+ipcMain.handle('open-external', async (_event, url) => {
+  if (url && (url.startsWith('mailto:') || url.startsWith('http:') || url.startsWith('https:'))) {
+    await shell.openExternal(url);
+    return true;
+  }
+  return false;
 });
 
 ipcMain.on('window-minimize', () => {

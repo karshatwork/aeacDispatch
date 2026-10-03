@@ -23,6 +23,8 @@ pids/
 *.pid
 *.seed
 *.pid.lock
+.clock_watermark
+*.key1
 
 # Operating System specific
 .DS_Store

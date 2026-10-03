@@ -1,8 +1,11 @@
 const mongoose = require('mongoose');
+const { initEnvironment } = require('../src/utils/cryptoConfig');
+initEnvironment();
+const { connectDB } = require('../src/config/db');
 
 async function run() {
-  await mongoose.connect('mongodb://localhost:27017/plc_sticker');
-  const db = mongoose.connection.db;
+  const conn = await connectDB();
+  const db = conn.db;
 
   const totalBatches = await db.collection('batches').countDocuments();
   const uniqueBatchIds = (await db.collection('batches').distinct('_id')).length;

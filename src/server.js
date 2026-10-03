@@ -13,7 +13,7 @@ const { connectDB } = require('./config/db');
 const { autoSeedAdmin } = require('./services/authService');
 const { startSyncWorker } = require('./services/syncService');
 const { recoverStaleTransactions, autoCleanupOpenDispatches } = require('./services/fifoService');
-const { validateLicense, getMachineFingerprint } = require('./utils/licenseEngine');
+const { validateLicense, getMachineFingerprint, getLicenseCandidates } = require('./utils/licenseEngine');
 
 const scannerService = require('./services/scannerService');
 
@@ -60,14 +60,15 @@ const wss = new WebSocketServer({
     server,
     verifyClient: (info, callback) => {
         const isTestEnv = process.env.NODE_ENV === 'test' || Boolean(process.env.JEST_WORKER_ID);
+        const isProduction = process.env.NODE_ENV === 'production';
         const expectedSecret = process.env.DESKTOP_SECRET;
-        if (isTestEnv || !expectedSecret) return callback(true);
+        if (isTestEnv || !isProduction) return callback(true);
 
         const urlParams = new URLSearchParams(info.req.url.replace(/^[^?]*\?/, ''));
         const secret = urlParams.get('desktopSecret') || info.req.headers['x-desktop-secret'];
         const origin = info.req.headers.origin || '';
 
-        if (secret === expectedSecret || origin === 'app://dispatch') {
+        if ((expectedSecret && secret === expectedSecret) || origin === 'app://dispatch') {
             return callback(true);
         }
 
@@ -93,7 +94,7 @@ wss.on('connection', (ws) => {
                 const qr = typeof data.payload === 'string' ? data.payload : (data.payload.qrData || data.payload.scannedPayload);
                 if (qr) scannerService.simulateScan(qr);
             }
-        } catch (e) {}
+        } catch (e) { }
     });
 });
 
@@ -117,56 +118,92 @@ scannerService.on('status', (status) => {
 });
 
 // Middleware
-// When DESKTOP_SECRET is set (packaged Electron exe), the backend is locked down:
-//   - Non-API requests → socket destroyed immediately (ERR_EMPTY_RESPONSE)
-//   - API requests     → must carry the ephemeral secret header/query
-// When DESKTOP_SECRET is NOT set (dev mode / npm run dev), the SPA is served
-// normally so the browser can access the app for development.
+// ============================================================================
+// ENVIRONMENT & DESKTOP GATEWAY SECURITY
+// In production (NODE_ENV=production):
+//   - Static file hosting (express.static) is disabled.
+//   - Non-API routes return 403 Access Denied.
+//   - API routes require the authorized Electron Desktop Secret (or app:// origin).
+// In development (NODE_ENV=development):
+//   - Static files are served from /public so developers can debug in Chrome/Edge.
+// ============================================================================
 const isTestEnv = process.env.NODE_ENV === 'test' || Boolean(process.env.JEST_WORKER_ID);
+const isProduction = process.env.NODE_ENV === 'production';
 
 app.use((req, res, next) => {
-    const expectedSecret = process.env.DESKTOP_SECRET;
-    const isProtected = Boolean(expectedSecret) && !isTestEnv;
-
-    if (!req.path.startsWith('/api')) {
-        if (isProtected) {
-            // Production exe: drop connection so browser gets ERR_EMPTY_RESPONSE
-            if (req.socket && !req.socket.destroyed) req.socket.destroy();
-            return;
+    // In production mode, enforce strict Desktop Electron lockdown
+    if (isProduction && !isTestEnv) {
+        // Block all non-API web page requests from regular browsers
+        if (!req.path.startsWith('/api')) {
+            return res.status(403).send('403 Access Denied: Application is only accessible via the official RecordKeeper Desktop Application.');
         }
-        // Dev mode: fall through to static file serving below
-        return next();
-    }
 
-    // API path
-    if (isTestEnv || !expectedSecret) return next();
+        // For API requests, verify the request originates from the authorized Electron desktop client
+        const expectedSecret = process.env.DESKTOP_SECRET;
+        const secretFromHeader = req.headers['x-desktop-secret'];
+        const secretFromQuery = req.query.desktopSecret;
+        const origin = req.headers.origin || '';
 
-    // Verify the request is from the authorised Electron host
-    const secretFromHeader = req.headers['x-desktop-secret'];
-    const secretFromQuery  = req.query.desktopSecret;
-    const origin           = req.headers.origin || '';
+        const isAuthorized = (expectedSecret && secretFromHeader === expectedSecret) ||
+            (expectedSecret && secretFromQuery === expectedSecret) ||
+            (origin === 'app://dispatch');
 
-    const isAuthorized = (secretFromHeader === expectedSecret) ||
-                         (secretFromQuery  === expectedSecret) ||
-                         (origin === 'app://dispatch');
-
-    if (!isAuthorized) {
-        if (req.socket && !req.socket.destroyed) req.socket.destroy();
-        return;
+        if (!isAuthorized) {
+            return res.status(403).json({
+                success: false,
+                error: '403 Access Denied: Unauthorized client connection. Desktop Application required.'
+            });
+        }
     }
 
     next();
 });
 
-// Dev-mode static file serving (skipped when DESKTOP_SECRET is active)
-if (!process.env.DESKTOP_SECRET) {
+// Serve frontend static files ONLY in development mode
+if (!isProduction) {
     app.use(express.static(publicPath));
     app.use('/assets', express.static(assetsPath));
 }
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+// Strict License Enforcement Gate
+// Whitelist health check and license activation so the Terminal Lock Screen can function.
+// All business logic routes (/api/auth, /api/boxes, /api/dispatch, /api/reports, /api/trace)
+// are strictly halted with 403 when unlicensed.
+app.use((req, res, next) => {
+    if (isTestEnv || !req.path.startsWith('/api')) return next();
+
+    if (req.path === '/api/system/health' || req.path.startsWith('/api/system/license')) {
+        return next();
+    }
+
+    const licenseCandidates = getLicenseCandidates();
+    const activeLicensePath = licenseCandidates.find(p => fs.existsSync(p));
+    const currentMachine = getMachineFingerprint();
+
+    if (!activeLicensePath) {
+        return res.status(403).json({
+            success: false,
+            error: 'Terminal Locked: No license key installed on this system',
+            licenseRequired: true,
+            machineCode: currentMachine
+        });
+    }
+
+    const licResult = validateLicense(activeLicensePath);
+    if (!licResult.valid) {
+        return res.status(403).json({
+            success: false,
+            error: `Terminal Locked: ${licResult.error}`,
+            licenseRequired: true,
+            machineCode: currentMachine,
+            licenseError: licResult.error
+        });
+    }
+
+    next();
+});
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -177,10 +214,14 @@ app.use('/api/trace', traceRoutes);
 app.use('/api/system', systemRoutes);
 
 // SPA fallback: in dev mode serve index.html for any non-API unmatched route
-// In protected mode the guard above already dropped non-API connections, so this never fires.
-if (!process.env.DESKTOP_SECRET) {
+// In production mode, reject any unhandled routes with 403 Access Denied
+if (!isProduction) {
     app.get('*', (req, res) => {
         res.sendFile(path.join(publicPath, 'index.html'));
+    });
+} else {
+    app.use((req, res) => {
+        res.status(403).send('403 Access Denied: Application is only accessible via the official RecordKeeper Desktop Application.');
     });
 }
 

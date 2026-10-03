@@ -245,6 +245,10 @@ const api = {
     });
   },
 
+  async getLegalDocuments() {
+    return this.request('/api/system/legal');
+  },
+
   async getComPorts() {
     return this.request('/api/system/com-ports');
   },

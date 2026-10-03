@@ -129,11 +129,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.history.replaceState(null, 'RecordKeeper Dispatch', window.location.pathname);
   }
 
-  // Start digital telemetry clock immediately (active on login and in-terminal)
+  // Start digital telemetry clock immediately (active on login, lock screen, and in-terminal)
   startClock();
 
-  // Initial health check & start 5-second telemetry polling
-  checkSystemHealth();
+  // Setup login form & dropdowns
+  const loginForm = document.getElementById('login-form');
+  if (loginForm) loginForm.addEventListener('submit', handleLogin);
+
+  if (window.scadaDropdown) {
+    window.scadaDropdown.initAll();
+  }
+
+  // HARD SECURITY GATE: Verify license before booting login or terminal
+  const initialHealth = await checkSystemHealth();
+  if (initialHealth && initialHealth.license && !initialHealth.license.valid) {
+    console.warn('[SECURITY] Terminal locked: License verification failed. Halting boot sequence.');
+    showLicenseLockScreen(initialHealth.license);
+    // DO NOT BOOT FURTHER!
+    return;
+  }
+
+  // License valid: proceed with normal terminal boot
   setInterval(checkSystemHealth, 5000);
 
   // Check if session exists in memory
@@ -145,15 +161,179 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Synchronize audio button state with stored settings
   updateAudioToggleUI();
-
-  // Setup login form
-  document.getElementById('login-form').addEventListener('submit', handleLogin);
-
-  // Initialize custom SCADA dropdowns everywhere
-  if (window.scadaDropdown) {
-    window.scadaDropdown.initAll();
-  }
 });
+
+// ============================================================================
+// TERMINAL LICENSE LOCKOUT MANAGEMENT
+// ============================================================================
+let _isLicenseLocked = false;
+
+function showLicenseLockScreen(license) {
+  _isLicenseLocked = true;
+  const lockScreen = document.getElementById('license-lock-screen');
+  const loginScreen = document.getElementById('login-screen');
+  const terminalShell = document.getElementById('terminal-shell');
+
+  if (loginScreen) loginScreen.style.display = 'none';
+  if (terminalShell) terminalShell.style.display = 'none';
+
+  if (!lockScreen) return;
+
+  const fpText = document.getElementById('lock-machine-code');
+  if (fpText) fpText.textContent = license.machineCode || 'UNKNOWN-HARDWARE-ID';
+
+  const titleEl = document.getElementById('lock-issue-title');
+  const descEl = document.getElementById('lock-issue-desc');
+  const badgeEl = document.getElementById('lock-badge-text');
+
+  if (license.productMismatch) {
+    if (badgeEl) badgeEl.textContent = 'PRODUCT MISMATCH';
+    if (titleEl) titleEl.textContent = 'LICENSE PRODUCT MISMATCH';
+    if (descEl) descEl.textContent = license.error || 'This license was issued for a different software product.';
+  } else if (license.hardwareMismatch) {
+    if (badgeEl) badgeEl.textContent = 'HARDWARE MISMATCH';
+    if (titleEl) titleEl.textContent = 'HARDWARE LOCK MISMATCH DETECTED';
+    if (descEl) descEl.textContent = license.error || 'The installed license key is registered to a different physical machine.';
+  } else if (license.clockTampered) {
+    if (badgeEl) badgeEl.textContent = 'CLOCK TAMPERING';
+    if (titleEl) titleEl.textContent = 'SYSTEM CLOCK ROLLBACK DETECTED';
+    if (descEl) descEl.textContent = license.error || 'System clock rollback detected. Clock cannot be moved backwards.';
+  } else if (license.expired) {
+    if (badgeEl) badgeEl.textContent = 'LICENSE EXPIRED';
+    if (titleEl) titleEl.textContent = 'COMMERCIAL LICENSE EXPIRED';
+    if (descEl) descEl.textContent = license.error || 'This license has expired. Contact vendor for renewal.';
+  } else if (license.tampered) {
+    if (badgeEl) badgeEl.textContent = 'SIGNATURE INVALID';
+    if (titleEl) titleEl.textContent = 'CRYPTOGRAPHIC SIGNATURE VERIFICATION FAILED';
+    if (descEl) descEl.textContent = 'License signature verification failed. The file is corrupt or has been tampered with.';
+  } else {
+    if (badgeEl) badgeEl.textContent = 'UNLICENSED SYSTEM';
+    if (titleEl) titleEl.textContent = 'NO VALID LICENSE INSTALLED';
+    if (descEl) descEl.textContent = license.error || 'No valid license.key found in the application directory.';
+  }
+
+  lockScreen.style.display = 'flex';
+}
+
+function hideLicenseLockScreen() {
+  _isLicenseLocked = false;
+  const lockScreen = document.getElementById('license-lock-screen');
+  if (lockScreen) lockScreen.style.display = 'none';
+}
+
+async function copyLockMachineCode() {
+  const fpText = document.getElementById('lock-machine-code');
+  const copyBtn = document.getElementById('lock-copy-btn');
+  if (!fpText) return;
+
+  const code = fpText.textContent.trim();
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(code);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = code;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+
+    if (copyBtn) {
+      const origHtml = copyBtn.innerHTML;
+      copyBtn.innerHTML = '<i class="ri-check-line"></i> COPIED!';
+      copyBtn.classList.remove('btn-primary');
+      copyBtn.classList.add('btn-success');
+      setTimeout(() => {
+        copyBtn.innerHTML = origHtml;
+        copyBtn.classList.remove('btn-success');
+        copyBtn.classList.add('btn-primary');
+      }, 2000);
+    }
+  } catch (e) {
+    alert('Fingerprint code: ' + code);
+  }
+}
+
+async function openHostLicenseFolder() {
+  if (window.electronAPI && typeof window.electronAPI.openLicenseFolder === 'function') {
+    await window.electronAPI.openLicenseFolder();
+  } else {
+    alert('License Directory: Place your license.key into the application root folder.');
+  }
+}
+
+function triggerLicenseFileInput() {
+  const fileInput = document.getElementById('lock-license-file-input');
+  if (fileInput) fileInput.click();
+}
+
+async function handleLicenseFileSelected(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const content = e.target.result;
+    if (!content) return;
+
+    try {
+      const res = await api.request('/api/system/license/activate', {
+        method: 'POST',
+        body: JSON.stringify({ licenseKey: content })
+      });
+
+      if (res && res.success) {
+        if (window.audioFeedback) window.audioFeedback.playSuccess();
+        alert('License Activated Successfully! Starting gateway...');
+        await recheckLicenseAndBoot();
+      } else {
+        alert(res.error || 'Activation failed');
+      }
+    } catch (err) {
+      alert('Activation error: ' + (err.message || 'Invalid license file'));
+    }
+  };
+  reader.readAsText(file);
+}
+
+async function recheckLicenseAndBoot() {
+  const res = await checkSystemHealth();
+  if (res && res.license && res.license.valid) {
+    hideLicenseLockScreen();
+    setInterval(checkSystemHealth, 5000);
+    if (api.restoreSession()) {
+      initApp();
+    } else {
+      showLoginScreen();
+    }
+    updateAudioToggleUI();
+  } else {
+    const errorMsg = res && res.license ? res.license.error : 'License verification failed';
+    if (res && res.license) {
+      showLicenseLockScreen(res.license);
+    }
+    alert('Verification Result: ' + errorMsg);
+  }
+}
+
+function handleMailtoClick(event, url) {
+  const targetUrl = url || 'mailto:work.karsh@gmail.com';
+  if (window.electronAPI && typeof window.electronAPI.openExternal === 'function') {
+    if (event) event.preventDefault();
+    window.electronAPI.openExternal(targetUrl);
+    return;
+  }
+}
+
+window.copyLockMachineCode = copyLockMachineCode;
+window.openHostLicenseFolder = openHostLicenseFolder;
+window.triggerLicenseFileInput = triggerLicenseFileInput;
+window.handleLicenseFileSelected = handleLicenseFileSelected;
+window.recheckLicenseAndBoot = recheckLicenseAndBoot;
+window.showLicenseLockScreen = showLicenseLockScreen;
+window.hideLicenseLockScreen = hideLicenseLockScreen;
+window.handleMailtoClick = handleMailtoClick;
 
 // ============================================================================
 // ON-SCREEN SYSTEM ALARM & DATABASE TELEMETRY
@@ -199,11 +379,15 @@ async function checkSystemHealth() {
     }
     if (res && res.license) {
       if (!res.license.valid) {
-        customModal.showLicenseModal(res.license.machineCode);
+        showLicenseLockScreen(res.license);
+      } else if (_isLicenseLocked) {
+        hideLicenseLockScreen();
       }
     }
+    return res;
   } catch (err) {
     updateDbTelemetry({ isConnected: false, lastError: 'API Server offline / unreachable' });
+    return null;
   }
 }
 
@@ -284,14 +468,21 @@ function updateDbTelemetry(db, sync) {
       }
     }
 
-    // If logged in, show on-screen alarm banner
+    // If logged in, show on-screen alarm banner (admin gets DB SETTINGS action)
     if (api.currentUser) {
-      showSystemAlarm(
-        'ALARM: DATABASE OFFLINE (SAFE MODE)',
-        `MongoDB unreachable at ${targetUri}: ${errorDetails}. Reconfigure connection parameters.`,
-        () => switchTab('tab-system'),
-        'DB SETTINGS'
-      );
+      if (api.currentUser.role === 'admin') {
+        showSystemAlarm(
+          'ALARM: DATABASE OFFLINE (SAFE MODE)',
+          `MongoDB unreachable at ${targetUri}: ${errorDetails}. Reconfigure connection parameters.`,
+          () => switchTab('tab-system'),
+          'DB SETTINGS'
+        );
+      } else {
+        showSystemAlarm(
+          'ALARM: DATABASE OFFLINE (SAFE MODE)',
+          `MongoDB unreachable at ${targetUri}: ${errorDetails}. Please notify System Administrator.`
+        );
+      }
     }
   }
 
@@ -344,7 +535,7 @@ async function handleLogin(e) {
     sounds.init();
     sounds.playViolation();
     errBox.textContent = !usernameInput
-      ? 'Please enter operator username.'
+      ? 'Please enter username.'
       : 'Please enter password.';
     errBox.style.display = 'block';
     if (!usernameInput) {
@@ -399,7 +590,6 @@ async function initApp() {
   // Role visibility: Hide tabs if unauthorized
   const userRole = user.role;
   const isSupervisorOrAbove = ['supervisor', 'manager', 'admin'].includes(userRole);
-  const isManagerOrAbove = ['manager', 'admin'].includes(userRole);
   const isAdmin = userRole === 'admin';
 
   const tabReports = document.querySelector('[data-tab="tab-reports"]');
@@ -408,7 +598,7 @@ async function initApp() {
 
   if (tabReports) tabReports.style.display = isSupervisorOrAbove ? 'flex' : 'none';
   if (tabUsers) tabUsers.style.display = isAdmin ? 'flex' : 'none';
-  if (tabSystem) tabSystem.style.display = isManagerOrAbove ? 'flex' : 'none';
+  if (tabSystem) tabSystem.style.display = isAdmin ? 'flex' : 'none';
 
   // Connect WebSocket
   connectWebSocket();
@@ -420,7 +610,7 @@ async function initApp() {
   loadAuditReasons();
 
   // If database is offline, direct administrator straight to system settings
-  if (window.lastKnownDbConnected === false && isManagerOrAbove) {
+  if (window.lastKnownDbConnected === false && isAdmin) {
     currentTab = 'tab-system';
   }
 
@@ -541,6 +731,11 @@ function handleHardwareScan(qrData) {
 function switchTab(tabId) {
   if (tabId === 'tab-users' && (!api.currentUser || api.currentUser.role !== 'admin')) {
     customModal.alert('Access restricted: Only system administrators can access user management.', { title: 'ACCESS DENIED', type: 'warning' });
+    return switchTab('tab-dispatch');
+  }
+
+  if (tabId === 'tab-system' && (!api.currentUser || api.currentUser.role !== 'admin')) {
+    customModal.alert('Access restricted: Only system administrators can access system settings.', { title: 'ACCESS DENIED', type: 'warning' });
     return switchTab('tab-dispatch');
   }
 
@@ -1334,7 +1529,7 @@ async function applyInventoryFilter(page = 1) {
       } else if (b.status === 'dispatched' && b.dispatchId) {
         actionsHtml += `
           <button class="btn-scada btn-secondary" style="padding: 2px 8px; font-size: 10px; height: 26px;" onclick="openDispatchBill('${b.dispatchId}')" title="View Delivery Challan">
-            <i class="ri-file-text-line"></i> BILL
+            <i class="ri-file-text-line"></i> MANIFEST
           </button>
         `;
       }
@@ -1406,10 +1601,10 @@ function handleModalScanVerification(qrData) {
 
   // Match: exact QR payload, exact batch number string, or embedded delimiter
   const isMatch = (targetQr && scanned === targetQr) ||
-                  scanned === targetBatchStr ||
-                  scanned.includes(`|${targetBatchStr}*`) ||
-                  scanned.includes(`|${targetBatchStr}|`) ||
-                  scanned.endsWith(`|${targetBatchStr}`);
+    scanned === targetBatchStr ||
+    scanned.includes(`|${targetBatchStr}*`) ||
+    scanned.includes(`|${targetBatchStr}|`) ||
+    scanned.endsWith(`|${targetBatchStr}`);
 
   const modalType = activeModalType;
   const cardEl = document.getElementById(`modal-${modalType}-scan-card`);
@@ -1960,7 +2155,7 @@ let _currentTracedBox = null;
 let _currentTracedSerials = [];
 
 // Copy Reference ID to clipboard with tactile feedback
-window.copyReferenceId = async function(idStr, el) {
+window.copyReferenceId = async function (idStr, el) {
   if (!idStr) return;
   try {
     await navigator.clipboard.writeText(idStr);
@@ -2087,7 +2282,7 @@ async function executeTrace(query) {
     const now = new Date();
     const closedDate = new Date(box.closedAt);
     const isToday = closedDate.toDateString() === now.toDateString();
-    const closedDisplay = isToday 
+    const closedDisplay = isToday
       ? closedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       : closedDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
     document.getElementById('trace-tile-closed').textContent = `${closedDisplay} (${formatRelativeTime(box.closedAt)})`;
@@ -2208,7 +2403,7 @@ function openSerialsModal() {
   if (sub && _currentTracedBox) {
     const isPartial = _currentTracedBox.completedCount < _currentTracedBox.batchSize;
     const shortCount = _currentTracedBox.batchSize - _currentTracedBox.completedCount;
-    const statusNote = isPartial 
+    const statusNote = isPartial
       ? ` &bull; <span style="color: #b45309; font-weight: 700;">Partial Box (${shortCount} short of ${_currentTracedBox.batchSize})</span>`
       : ' &bull; <span style="color: #15803d; font-weight: 700;">Full Standard Box</span>';
     sub.innerHTML = `Box #${_currentTracedBox.batchNumber} &bull; Model ${_currentTracedBox.modelId} &bull; ${_currentTracedSerials.length} Serialized Parts${statusNote}`;
@@ -2772,24 +2967,24 @@ function renderDailyChart(chartData) {
   const chartType = isMonthly ? 'bar' : 'line';
   const datasetConfig = isMonthly
     ? {
-        label,
-        data: dataVals,
-        backgroundColor: strokeColor,
-        borderRadius: 4,
-        maxBarThickness: 38
-      }
+      label,
+      data: dataVals,
+      backgroundColor: strokeColor,
+      borderRadius: 4,
+      maxBarThickness: 38
+    }
     : {
-        label,
-        data: dataVals,
-        borderColor: strokeColor,
-        backgroundColor: fillColor,
-        fill: true,
-        tension: 0.35,
-        borderWidth: 2,
-        pointRadius: (chartData.labels && chartData.labels.length > 25) ? 2 : 3,
-        pointHoverRadius: 5,
-        pointBackgroundColor: strokeColor
-      };
+      label,
+      data: dataVals,
+      borderColor: strokeColor,
+      backgroundColor: fillColor,
+      fill: true,
+      tension: 0.35,
+      borderWidth: 2,
+      pointRadius: (chartData.labels && chartData.labels.length > 25) ? 2 : 3,
+      pointHoverRadius: 5,
+      pointBackgroundColor: strokeColor
+    };
 
   dailyChart = new Chart(ctx, {
     type: chartType,
@@ -3222,7 +3417,7 @@ async function openDispatchBill(dispatchId) {
 
     openModal('modal-dispatch-bill');
   } catch (err) {
-    await customModal.alert('Failed to load bill: ' + err.message, { title: 'BILL LOAD ERROR', type: 'danger' });
+    await customModal.alert('Failed to load bill: ' + err.message, { title: 'MANIFEST LOAD ERROR', type: 'danger' });
   }
 }
 
@@ -3322,9 +3517,13 @@ async function printPendingManifest() {
 
 
 // ============================================================================
-// VIEW 6: SYSTEM & USERS (MGR / ADMIN)
+// VIEW 6: SYSTEM CONFIGURATION (ADMIN ONLY)
 // ============================================================================
 async function loadSystemView(showFeedback = false) {
+  if (!api.currentUser || api.currentUser.role !== 'admin') {
+    return;
+  }
+
   const refreshBtn = document.getElementById('btn-refresh-telemetry');
   const refreshIcon = document.getElementById('icon-refresh-telemetry');
   if (refreshIcon) refreshIcon.classList.add('scada-spin');
@@ -3375,7 +3574,7 @@ async function loadSystemView(showFeedback = false) {
     }
 
     // Load COM ports and serial settings
-    if (api.currentUser.role === 'admin' || api.currentUser.role === 'manager') {
+    if (api.currentUser.role === 'admin') {
       await loadComPortsList();
       if (statusRes.scanner) {
         if (document.getElementById('sys-com-baud') && statusRes.scanner.baudRate) {
@@ -3956,7 +4155,7 @@ function openEditUserModal(userId) {
   document.getElementById('eu-id').value = user._id;
   document.getElementById('eu-username').value = user.username;
   document.getElementById('eu-fullname').value = user.fullName || '';
-  
+
   const roleSelect = document.getElementById('eu-role');
   if (roleSelect) {
     roleSelect.value = user.role || 'operator';
@@ -4234,8 +4433,8 @@ function renderReasonsList() {
 
   if (!container) return;
 
-  const currentList = _activeReasonsCategory === 'hold' 
-    ? _currentAuditReasons.holdReasons 
+  const currentList = _activeReasonsCategory === 'hold'
+    ? _currentAuditReasons.holdReasons
     : _currentAuditReasons.rejectionReasons;
 
   if (!currentList || currentList.length === 0) {
@@ -4266,8 +4465,8 @@ async function addNewAuditReason() {
   const val = inputEl ? inputEl.value.trim() : '';
   if (!val) return;
 
-  const currentList = _activeReasonsCategory === 'hold' 
-    ? _currentAuditReasons.holdReasons 
+  const currentList = _activeReasonsCategory === 'hold'
+    ? _currentAuditReasons.holdReasons
     : _currentAuditReasons.rejectionReasons;
 
   // Case-insensitive duplicate check
@@ -4305,8 +4504,8 @@ async function addNewAuditReason() {
 }
 
 async function deleteAuditReason(index) {
-  const currentList = _activeReasonsCategory === 'hold' 
-    ? _currentAuditReasons.holdReasons 
+  const currentList = _activeReasonsCategory === 'hold'
+    ? _currentAuditReasons.holdReasons
     : _currentAuditReasons.rejectionReasons;
 
   const reasonToDelete = currentList[index];

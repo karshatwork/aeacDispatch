@@ -6,8 +6,7 @@ const {
     getMachineFingerprint,
     generateLicenseKey,
     validateLicense,
-    activateLicense,
-    VENDOR_SECRET
+    activateLicense
 } = require('../src/utils/licenseEngine');
 
 describe('Cryptographic Hardware Licensing Engine', () => {
