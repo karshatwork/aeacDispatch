@@ -3259,7 +3259,7 @@ function buildManifestHTML({ title, docId, status, isCompleted, meta, boxes, inc
       <h1>${title}</h1>
       <div class="doc-id">${docId}</div>
     </div>
-    <img src="${logoSrc}" class="doc-header-logo" alt="Customer Logo">
+    ${logoSrc ? `<img src="${logoSrc}" class="doc-header-logo" alt="Customer Logo">` : ''}
   </div>
   <div class="doc-status-bar ${statusBarClass}">
     <span class="doc-status-dot"></span>
@@ -3311,11 +3311,14 @@ function buildManifestHTML({ title, docId, status, isCompleted, meta, boxes, inc
  */
 async function fetchLogoDataUrl() {
   try {
-    const origin = (window.electronAPI?.isElectron)
-      ? `http://127.0.0.1:${window.electronAPI?.serverPort || 4000}`
-      : window.location.origin;
-    const resp = await fetch(`${origin}/assets/logo-right.png`);
-    if (!resp.ok) return '';
+    let resp = await fetch('/assets/logo-right.png').catch(() => null);
+    if (!resp || !resp.ok) {
+      const origin = (window.electronAPI?.isElectron)
+        ? `http://127.0.0.1:${window.electronAPI?.serverPort || 4000}`
+        : window.location.origin;
+      resp = await fetch(`${origin}/assets/logo-right.png`).catch(() => null);
+    }
+    if (!resp || !resp.ok) return '';
     const blob = await resp.blob();
     return await new Promise(resolve => {
       const reader = new FileReader();

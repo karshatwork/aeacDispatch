@@ -67,8 +67,17 @@ const wss = new WebSocketServer({
         const urlParams = new URLSearchParams(info.req.url.replace(/^[^?]*\?/, ''));
         const secret = urlParams.get('desktopSecret') || info.req.headers['x-desktop-secret'];
         const origin = info.req.headers.origin || '';
+        const clientRole = urlParams.get('role') || info.req.headers['x-client-role'];
 
-        if ((expectedSecret && secret === expectedSecret) || origin === 'app://dispatch') {
+        // Authorized Electron window
+        if ((expectedSecret && secret === expectedSecret) || origin === 'app://dispatch' || origin === 'app://packing') {
+            return callback(true);
+        }
+
+        // Allow localhost scanner tools / emulator
+        const remoteIp = info.req.socket?.remoteAddress || '';
+        const isLocalhost = !remoteIp || remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
+        if (isLocalhost && (!origin || clientRole === 'scanner' || clientRole === 'emulator')) {
             return callback(true);
         }
 
@@ -133,8 +142,8 @@ const isProduction = process.env.NODE_ENV === 'production';
 app.use((req, res, next) => {
     // In production mode, enforce strict Desktop Electron lockdown
     if (isProduction && !isTestEnv) {
-        // Block all non-API web page requests from regular browsers
-        if (!req.path.startsWith('/api')) {
+        // Block all non-API and non-asset web page requests from regular browsers
+        if (!req.path.startsWith('/api') && !req.path.startsWith('/assets') && req.path !== '/favicon.ico') {
             return res.status(403).send('403 Access Denied: Application is only accessible via the official RecordKeeper Desktop Application.');
         }
 
@@ -148,7 +157,7 @@ app.use((req, res, next) => {
             (expectedSecret && secretFromQuery === expectedSecret) ||
             (origin === 'app://dispatch');
 
-        if (!isAuthorized) {
+        if (!isAuthorized && req.path.startsWith('/api')) {
             return res.status(403).json({
                 success: false,
                 error: '403 Access Denied: Unauthorized client connection. Desktop Application required.'
@@ -159,10 +168,10 @@ app.use((req, res, next) => {
     next();
 });
 
-// Serve frontend static files ONLY in development mode
+// Serve frontend static assets (available in both dev and production for document generation)
+app.use('/assets', express.static(assetsPath));
 if (!isProduction) {
     app.use(express.static(publicPath));
-    app.use('/assets', express.static(assetsPath));
 }
 
 app.use(cors({ origin: true, credentials: true }));

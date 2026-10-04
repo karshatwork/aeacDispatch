@@ -51,7 +51,8 @@ function getArg(flag, fallback) {
 }
 
 const SERVER_PORT = process.env.PORT || 4000;
-const WS_URL = getArg('--ws', `ws://localhost:${SERVER_PORT}`);
+const defaultWsUrl = `ws://127.0.0.1:${SERVER_PORT}?role=scanner`;
+const WS_URL = getArg('--ws', defaultWsUrl);
 const SERIAL_PORT = getArg('--port', null);
 const BAUD_RATE = parseInt(getArg('--baud', process.env.COM_BAUD_RATE || '9600'), 10);
 
@@ -88,7 +89,9 @@ async function connectDb() {
 function connectWebSocket() {
     return new Promise((resolve) => {
         try {
-            wsClient = new WebSocket(WS_URL);
+            wsClient = new WebSocket(WS_URL, {
+                headers: { 'x-client-role': 'scanner' }
+            });
 
             wsClient.on('open', () => {
                 activeChannel = 'WebSocket Bridge';
