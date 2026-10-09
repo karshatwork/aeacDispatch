@@ -163,4 +163,15 @@ describe('API Role-Based Governance Matrix', () => {
         expect(okReopen.body.box.reopenedBy).toBe('test_manager');
     });
 
+    test('Supervisor CAN fetch monthly dispatch report metrics', async () => {
+        const res = await request(app)
+            .get('/api/reports/monthly')
+            .set('Authorization', `Bearer ${supervisorToken}`);
+
+        expect(res.status).toBe(200);
+        expect(res.body.success).toBe(true);
+        expect(res.body.metrics).toBeDefined();
+        expect(res.body.charts).toBeDefined();
+    });
+
 });

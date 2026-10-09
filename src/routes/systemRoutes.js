@@ -568,6 +568,15 @@ const DEFAULT_REJECT_REASONS = [
 // GET /api/system/reasons - Retrieve quality hold and rejection reason lists
 router.get('/reasons', authenticate, async (req, res) => {
     try {
+        if (!getStatus().isConnected) {
+            return res.json({
+                success: true,
+                holdReasons: DEFAULT_HOLD_REASONS,
+                rejectionReasons: DEFAULT_REJECT_REASONS,
+                offline: true
+            });
+        }
+
         let settings = await SystemSettings.findOne({ key: 'global_settings' });
         if (!settings) {
             settings = await SystemSettings.create({

@@ -9,6 +9,9 @@ const JWT_SECRET = process.env.JWT_SECRET || 'aeac_dispatch_secret_key_super_sec
  * Auto-seed default Administrator if no users exist
  */
 async function autoSeedAdmin() {
+    const { getStatus } = require('../config/db');
+    if (!getStatus().isConnected) return;
+
     const adminUser = await DispatchUser.findOne({ username: 'admin' });
     if (!adminUser) {
         const salt = await bcrypt.genSalt(10);

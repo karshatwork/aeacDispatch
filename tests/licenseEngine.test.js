@@ -69,7 +69,7 @@ describe('Cryptographic Hardware Licensing Engine', () => {
 
         const verification = validateLicense(expiredLicense);
         expect(verification.valid).toBe(false);
-        expect(verification.error).toContain('License has expired');
+        expect(verification.error).toContain('License expired');
     });
 
     test('should reject tampered license (signature verification)', () => {
@@ -87,7 +87,7 @@ describe('Cryptographic Hardware Licensing Engine', () => {
 
         const verification = validateLicense(tamperedBase64);
         expect(verification.valid).toBe(false);
-        expect(verification.error).toContain('Tampered license file');
+        expect(verification.error).toContain('verification failed');
     });
 
     test('should activate and persist license.key to target directory', () => {

@@ -12,7 +12,10 @@
     "license:gen": "node scripts/generate-license.js",
     "seed:production": "node scripts/seed-production-data.js",
     "seed:batches": "node scripts/seed-batches.js",
+    "seed:batches:local": "node scripts/seed-batches.js --local",
+    "db:clear": "node scripts/clear-local-db.js",
     "simulate:batch": "node scripts/simulate-new-batch.js",
+    "simulate:all": "node scripts/simulate-new-batch.js --all",
     "config": "node scripts/edit-config.js",
     "scanner": "node scripts/com-scanner-emulator.js"
   },

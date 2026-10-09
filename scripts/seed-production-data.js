@@ -21,67 +21,67 @@ async function seed() {
     const modelsData = [
         {
             modelId: 'M001',
-            modelName: 'MOD-ALU-HOUSING',
-            batchSize: 20,
-            supplierCode: 'S1042',
-            internalPartId: 'IP-HOUSING-01',
-            customerPartNo: '0303CAL00111N',
-            productRevNo: 'REV-A',
-            softwareRevNo: 'SW-1.4',
-            customerName: 'Mahindra & Mahindra Powertrain',
-            logoText: 'MAHINDRA',
+            modelName: 'AE-33.0010.00 - Lear Part',
+            batchSize: 60,
+            supplierCode: '10156230',
+            internalPartId: 'AE-33.0010.00',
+            customerPartNo: 'L003388589NCPAA',
+            productRevNo: 'Level 4',
+            softwareRevNo: 'SW2',
+            customerName: 'LEAR Corporation',
+            logoText: 'LEAR',
             serialPrnTemplate: 'serial_template.prn',
             batchPrnTemplate: 'batch_template.prn',
             active: true,
-            createdAt: new Date('2026-09-01T00:00:00.000Z')
+            createdAt: new Date('2026-04-14T10:56:23.427Z')
         },
         {
             modelId: 'M002',
-            modelName: 'MOD-STEEL-FLANGE',
-            batchSize: 50,
-            supplierCode: 'S1042',
-            internalPartId: 'IP-FLANGE-02',
-            customerPartNo: '0303CSL00222N',
-            productRevNo: 'REV-B',
-            softwareRevNo: 'SW-1.4',
-            customerName: 'Mahindra & Mahindra Powertrain',
-            logoText: 'MAHINDRA',
+            modelName: 'AE-33.0006.00 - MSKH Part',
+            batchSize: 60,
+            supplierCode: 'ABH006',
+            internalPartId: 'AE-33.0006.00',
+            customerPartNo: 'E4MV-24136',
+            productRevNo: 'Level 4',
+            softwareRevNo: 'SW2',
+            customerName: 'MSKH Seatings',
+            logoText: 'MSKH',
             serialPrnTemplate: 'serial_template.prn',
             batchPrnTemplate: 'batch_template.prn',
             active: true,
-            createdAt: new Date('2026-09-01T00:00:00.000Z')
+            createdAt: new Date('2026-05-10T09:47:51.748Z')
         },
         {
             modelId: 'M003',
-            modelName: 'MOD-GEAR-PINION',
-            batchSize: 25,
-            supplierCode: 'S1042',
-            internalPartId: 'IP-PINION-03',
-            customerPartNo: 'TM-9821-GP-03',
-            productRevNo: 'REV-C',
-            softwareRevNo: 'SW-2.0',
-            customerName: 'Tata Motors Commercial Vehicles',
+            modelName: 'AE-33.0008.00 - Mahindra XUV',
+            batchSize: 50,
+            supplierCode: 'MHD008',
+            internalPartId: 'AE-33.0008.00',
+            customerPartNo: 'M700-14299A',
+            productRevNo: 'Level 3',
+            softwareRevNo: 'SW1',
+            customerName: 'Mahindra & Mahindra',
+            logoText: 'M&M',
+            serialPrnTemplate: 'serial_template.prn',
+            batchPrnTemplate: 'batch_template.prn',
+            active: true,
+            createdAt: new Date('2026-06-01T08:12:00.000Z')
+        },
+        {
+            modelId: 'M004',
+            modelName: 'AE-33.0012.00 - Tata Motors EV',
+            batchSize: 40,
+            supplierCode: 'TTA012',
+            internalPartId: 'AE-33.0012.00',
+            customerPartNo: 'T500-99881B',
+            productRevNo: 'Level 5',
+            softwareRevNo: 'SW3',
+            customerName: 'Tata Motors',
             logoText: 'TATA',
             serialPrnTemplate: 'serial_template.prn',
             batchPrnTemplate: 'batch_template.prn',
             active: true,
-            createdAt: new Date('2026-09-01T00:00:00.000Z')
-        },
-        {
-            modelId: 'M004',
-            modelName: 'MOD-CLUTCH-COLLAR',
-            batchSize: 30,
-            supplierCode: 'S1042',
-            internalPartId: 'IP-COLLAR-04',
-            customerPartNo: 'BGL-CC-4004',
-            productRevNo: 'REV-A',
-            softwareRevNo: 'SW-1.1',
-            customerName: 'BGL Industrial Transmission',
-            logoText: 'BGL',
-            serialPrnTemplate: 'serial_template.prn',
-            batchPrnTemplate: 'batch_template.prn',
-            active: true,
-            createdAt: new Date('2026-09-01T00:00:00.000Z')
+            createdAt: new Date('2026-07-15T11:30:00.000Z')
         }
     ];
 
@@ -144,13 +144,26 @@ async function seed() {
             const batchDate = `${yyyy}.${mm}.${dd}`;
 
             // Generate serial numbers for this batch
-            const serialNumbers = [];
-            for (let s = 1; s <= batchSize; s++) {
-                const snPad = String(s).padStart(3, '0');
-                serialNumbers.push(`SN-${model.modelId}-${batchNumber}-${snPad}`);
+            function generateRealSerials(startOffset, count) {
+                const serials = [];
+                for (let i = 0; i < count; i++) {
+                    let n = startOffset + i;
+                    let c1 = String.fromCharCode(65 + (Math.floor(n / 676) % 26));
+                    let c2 = String.fromCharCode(65 + (Math.floor(n / 26) % 26));
+                    let c3 = String.fromCharCode(65 + (n % 26));
+                    serials.push(`${c1}${c2}${c3}`);
+                }
+                return serials;
             }
 
-            const batchQrData = `*DEFAULT|${model.modelId}|${batchNumber}*`;
+            const serialNumbers = generateRealSerials(1000 + (batchNumber * batchSize), batchSize);
+            const revNo = (model.productRevNo || 'Level 4').toUpperCase();
+            const swRev = (model.softwareRevNo || 'SW2').toUpperCase();
+            const supplier = model.supplierCode || '10156230';
+            const intPart = model.internalPartId || model.modelId;
+            const custPart = model.customerPartNo || 'N/A';
+
+            const batchQrData = `*${supplier}|${intPart}|${custPart}|${revNo}|${swRev}|${batchDate}|${shift}(${batchNumber})|${serialNumbers.join(', ')}*`;
 
             batches.push({
                 batchNumber,

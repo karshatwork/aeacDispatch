@@ -59,6 +59,64 @@ function validateDispatchQuantity() {
   return { valid: true, qty, batchSize };
 }
 
+/**
+ * Helper to parse physical sticker fields matching printed shop-floor labels.
+ * Reads document properties directly from box document fields.
+ * Strictly extracts sticker code (shiftBatchCode) and printed batch date from batchQrData.
+ */
+function getBoxStickerInfo(box) {
+  if (!box) {
+    return {
+      shiftBatchCode: '--',
+      customerPartNo: '--',
+      internalPartId: '--',
+      batchDate: '--',
+      supplierCode: '--',
+      batchNumber: ''
+    };
+  }
+
+  let shiftBatchCode = '--';
+  let batchDate = '--';
+  let supplierCode = box.supplierCode || '--';
+  let internalPartId = box.internalPartId || box.modelId || '--';
+  let customerPartNo = box.customerPartNo || '--';
+
+  // Strictly extract sticker code, date, and part details from 2D DataMatrix QR string
+  if (box.batchQrData) {
+    const raw = box.batchQrData.replace(/^\*+|\*+$/g, '').trim();
+    const parts = raw.split('|');
+
+    if (parts.length >= 7) {
+      if (parts[0]) supplierCode = parts[0];
+      if (parts[1]) internalPartId = parts[1];
+      if (parts[2]) customerPartNo = parts[2];
+      if (parts[5] && parts[5].includes('.')) {
+        batchDate = parts[5];
+      }
+      if (parts[6]) {
+        shiftBatchCode = parts[6];
+      }
+    }
+  }
+
+  // Fallback: If customerPartNo is '--' and activeTx is present, use activeTx.customerPartNo
+  if (customerPartNo === '--' && typeof activeTx !== 'undefined' && activeTx && activeTx.customerPartNo) {
+    customerPartNo = activeTx.customerPartNo;
+  }
+
+  const batchNumber = box.batchNumber ? String(box.batchNumber) : '';
+
+  return {
+    shiftBatchCode,
+    customerPartNo,
+    internalPartId,
+    batchDate,
+    supplierCode,
+    batchNumber
+  };
+}
+
 // ============================================================================
 // INITIALIZATION & AUTH LIFECYCLE
 // ============================================================================
@@ -831,7 +889,7 @@ async function loadModelSelector(preserveSelected = true) {
       res.models.forEach(m => {
         const opt = document.createElement('option');
         opt.value = m.modelId;
-        opt.textContent = `${m.modelId} - ${m.modelName} (Part: ${m.customerPartNo})`;
+        opt.textContent = m.modelName ? `${m.modelName} (Part: ${m.customerPartNo})` : m.modelId;
         opt.dataset.availableBoxes = m.availableBoxes;
         opt.dataset.availableParts = m.availableParts;
         opt.dataset.batchSize = m.batchSize || 20;
@@ -947,10 +1005,10 @@ function renderActiveDispatchUI() {
 
   document.getElementById('active-tx-id').textContent = activeTx.dispatchId;
   document.getElementById('active-tx-target').textContent = `${activeTx.targetQuantity} ${activeTx.targetType.toUpperCase()}`;
-  document.getElementById('active-tx-model').textContent = activeTx.modelId;
+  document.getElementById('active-tx-model').textContent = activeTx.modelName || activeTx.modelId;
   document.getElementById('active-tx-operator').textContent = activeTx.operatorFullName || activeTx.operatorUsername;
 
-  // Render Pick Table (5 Columns - QR column removed per operator UX)
+  // Render Pick Table (6 Columns: RANK, BATCH / SHIFT CODE, CUSTOMER PART NO, PRODUCED AT, PARTS, STATUS)
   const tbody = document.getElementById('fifo-pick-tbody');
   tbody.innerHTML = '';
 
@@ -962,10 +1020,21 @@ function renderActiveDispatchUI() {
     tr.setAttribute('data-box-id', box.boxId);
     if (isScanned) tr.style.background = 'rgba(5, 150, 105, 0.15)';
 
+    const sticker = getBoxStickerInfo(box);
+    const producedTime = box.closedAt ? new Date(box.closedAt).toISOString().slice(0, 16).replace('T', ' ') : (sticker.batchDate || '--');
+
     tr.innerHTML = `
       <td><strong>#${index + 1}</strong></td>
-      <td><strong style="color: #0284c7;">BOX-${box.batchNumber}</strong></td>
-      <td>${new Date(box.closedAt).toISOString().slice(0, 16).replace('T', ' ')}</td>
+      <td>
+        <strong style="color: #0f172a; font-size: 13.5px; font-family: var(--font-mono);">${sticker.shiftBatchCode}</strong>
+        <div style="font-size: 10.5px; color: #64748b; font-weight: 600; font-family: var(--font-mono); margin-top: 2px;">
+          <i class="ri-calendar-line" style="color: #0284c7;"></i> ${sticker.batchDate}
+        </div>
+      </td>
+      <td>
+        <strong style="color: #0284c7; font-size: 12px; font-family: var(--font-mono);">${sticker.customerPartNo}</strong>
+      </td>
+      <td style="font-family: var(--font-mono); font-size: 11px;">${producedTime}</td>
       <td><strong>${box.completedCount} PCS</strong></td>
       <td>
         ${isScanned ? '<span class="badge badge-verified"><i class="ri-check-line"></i> VERIFIED</span>' : '<span class="badge badge-pending"><i class="ri-barcode-box-line"></i> PENDING SCAN</span>'}
@@ -1007,22 +1076,27 @@ function renderActiveDispatchUI() {
   if (radialBoxes) radialBoxes.textContent = `${scannedCount} / ${totalCount}`;
   if (radialParts) radialParts.textContent = `${scannedParts} / ${totalParts}`;
 
-  // Update Next Target Reticle (Inline Compact Layout)
+  // Update Next Target Physical Sticker Card
   const nextUnscannedBox = activeTx.allocatedBoxes.find(b => !scannedBoxIds.includes(b.boxId.toString()));
-  const reticleBatch = document.getElementById('reticle-next-batch');
-  const reticleModel = document.getElementById('reticle-next-model');
-  const reticleSub = document.getElementById('reticle-next-sub');
+  const stickerQty = document.getElementById('reticle-sticker-qty');
+  const stickerCode = document.getElementById('reticle-sticker-code');
+  const stickerCustPart = document.getElementById('reticle-sticker-custpart');
+  const stickerDate = document.getElementById('reticle-sticker-date');
+  const stickerModel = document.getElementById('reticle-sticker-model');
 
   if (nextUnscannedBox) {
-    if (reticleBatch) reticleBatch.textContent = `BATCH #${nextUnscannedBox.batchNumber}`;
-    if (reticleModel) reticleModel.textContent = activeTx.modelId;
-    if (reticleSub) {
-      const dateStr = nextUnscannedBox.batchDate ? nextUnscannedBox.batchDate.replace(/\./g, '-') : (nextUnscannedBox.closedAt ? new Date(nextUnscannedBox.closedAt).toISOString().slice(0, 10) : '--');
-      reticleSub.innerHTML = `&bull; Produced: ${dateStr} &bull; Qty: ${nextUnscannedBox.completedCount} Pcs`;
-    }
+    const sticker = getBoxStickerInfo(nextUnscannedBox);
+    if (stickerQty) stickerQty.textContent = `${nextUnscannedBox.completedCount || 60} PCS`;
+    if (stickerCode) stickerCode.textContent = sticker.shiftBatchCode;
+    if (stickerCustPart) stickerCustPart.textContent = sticker.customerPartNo;
+    if (stickerDate) stickerDate.textContent = sticker.batchDate || (nextUnscannedBox.closedAt ? new Date(nextUnscannedBox.closedAt).toISOString().slice(0, 10) : '--');
+    if (stickerModel) stickerModel.textContent = activeTx.modelName || activeTx.modelId;
   } else {
-    if (reticleBatch) reticleBatch.textContent = `ALL VERIFIED`;
-    if (reticleSub) reticleSub.innerHTML = `&bull; 100% of order scanned &bull; Ready to complete dispatch`;
+    if (stickerQty) stickerQty.textContent = '0 PCS';
+    if (stickerCode) stickerCode.textContent = 'ALL VERIFIED';
+    if (stickerCustPart) stickerCustPart.textContent = 'ORDER COMPLETE';
+    if (stickerDate) stickerDate.textContent = 'SUCCESS';
+    if (stickerModel) stickerModel.textContent = activeTx.modelName || activeTx.modelId;
   }
 
   // Update Status Badge
@@ -1042,7 +1116,7 @@ function renderActiveDispatchUI() {
   // Render Staging Bay Warehouse Animation Entity
   if (window.dispatchAnimation) {
     window.dispatchAnimation.render({
-      allocatedBoxes: activeTx.allocatedBoxes,
+      allocatedBoxes: activeTx.allocatedBoxes.map(b => ({ ...b, label: getBoxStickerInfo(b).shiftBatchCode })),
       scannedBoxes: activeTx.scannedBoxes || [],
       isComplete: scannedCount === totalCount && totalCount > 0
     });
@@ -1083,11 +1157,7 @@ async function processBoxScan(scannedPayload) {
     if (res.success) {
       sounds.playSuccess();
       showBannerAlert(res.message, 'success');
-      // Trigger the fun optical laser scan flash and forklift stacking motion on animation entity
-      if (window.dispatchAnimation) {
-        window.dispatchAnimation.triggerScanEffect();
-      }
-      // Refresh active transaction state
+      // Refresh active transaction state (animation queues box via render)
       await checkActiveDispatch();
     } else {
       sounds.playViolation();
@@ -1113,6 +1183,8 @@ async function handleConfirmDispatch() {
   if (!activeTx) return;
 
   const notes = await customModal.prompt('Enter any dispatch notes (optional):', { title: 'CONFIRM DISPATCH NOTES', placeholder: 'Optional notes' });
+  if (notes === null) return; // User cancelled modal dialog
+
   try {
     const res = await api.confirmDispatch(activeTx.dispatchId, notes || '');
     sounds.playCompletion();
@@ -1148,7 +1220,7 @@ function handleCancelDispatch() {
   if (metaEl) {
     const scanned = (activeTx.scannedBoxes && activeTx.scannedBoxes.length) || 0;
     const total = (activeTx.allocatedBoxes && activeTx.allocatedBoxes.length) || 0;
-    metaEl.textContent = `Model: ${activeTx.modelId} • Scanned: ${scanned} / ${total} Boxes`;
+    metaEl.textContent = `Model: ${activeTx.modelName || activeTx.modelId} • Scanned: ${scanned} / ${total} Boxes`;
   }
   if (reasonEl) {
     reasonEl.value = 'Operator cancelled';
@@ -1256,7 +1328,7 @@ async function loadInventoryView() {
         modelsRes.models.forEach(m => {
           const opt = document.createElement('option');
           opt.value = m.modelId;
-          opt.textContent = m.modelName ? `${m.modelId} (${m.modelName})` : m.modelId;
+          opt.textContent = m.modelName || m.modelId;
           modelSelect.appendChild(opt);
         });
       }
@@ -1459,6 +1531,7 @@ async function applyInventoryFilter(page = 1) {
 
     res.boxes.forEach(b => {
       const tr = document.createElement('tr');
+      const sticker = getBoxStickerInfo(b);
       const statusBadge = `<span class="badge badge-${b.status}">${(b.status || 'unknown').toUpperCase()}</span>`;
 
       // Reference ID column
@@ -1505,24 +1578,27 @@ async function applyInventoryFilter(page = 1) {
       `;
 
       const safeQrParam = encodeURIComponent(b.batchQrData || '');
+      const stickerCodeParam = encodeURIComponent(sticker.shiftBatchCode);
+      const modelNameParam = encodeURIComponent(b.modelName || b.modelId || '');
+
       if (b.status === 'available' && isSupervisorOrAbove) {
         actionsHtml += `
-          <button class="btn-scada btn-warning" style="padding: 2px 7px; font-size: 10px; height: 26px;" onclick="openHoldModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0}, '${safeQrParam}')">
+          <button class="btn-scada btn-warning" style="padding: 2px 7px; font-size: 10px; height: 26px;" onclick="openHoldModal('${b._id}', '${stickerCodeParam}', '${modelNameParam}', ${b.completedCount || 0}, '${safeQrParam}')">
             <i class="ri-pause-circle-line"></i> HOLD
           </button>
-          <button class="btn-scada btn-danger" style="padding: 2px 7px; font-size: 10px; height: 26px;" onclick="openRejectModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0}, '${safeQrParam}')">
+          <button class="btn-scada btn-danger" style="padding: 2px 7px; font-size: 10px; height: 26px;" onclick="openRejectModal('${b._id}', '${stickerCodeParam}', '${modelNameParam}', ${b.completedCount || 0}, '${safeQrParam}')">
             <i class="ri-close-circle-line"></i> REJECT
           </button>
         `;
       } else if (b.status === 'hold' && isSupervisorOrAbove) {
         actionsHtml += `
-          <button class="btn-scada btn-success" style="padding: 2px 9px; font-size: 10px; height: 26px;" onclick="openReleaseModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0}, '${safeQrParam}')">
+          <button class="btn-scada btn-success" style="padding: 2px 9px; font-size: 10px; height: 26px;" onclick="openReleaseModal('${b._id}', '${stickerCodeParam}', '${modelNameParam}', ${b.completedCount || 0}, '${safeQrParam}')">
             <i class="ri-play-circle-line"></i> RELEASE
           </button>
         `;
       } else if (b.status === 'rejected' && isManagerOrAbove) {
         actionsHtml += `
-          <button class="btn-scada btn-primary" style="padding: 2px 9px; font-size: 10px; height: 26px;" onclick="openReopenModal('${b._id}', ${b.batchNumber}, '${b.modelId || ''}', ${b.completedCount || 0}, '${safeQrParam}')">
+          <button class="btn-scada btn-primary" style="padding: 2px 9px; font-size: 10px; height: 26px;" onclick="openReopenModal('${b._id}', '${stickerCodeParam}', '${modelNameParam}', ${b.completedCount || 0}, '${safeQrParam}')">
             <i class="ri-restart-line"></i> REOPEN
           </button>
         `;
@@ -1540,8 +1616,13 @@ async function applyInventoryFilter(page = 1) {
       const producedTime = b.closedAt ? new Date(b.closedAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'N/A';
 
       tr.innerHTML = `
-        <td><strong>BOX #${b.batchNumber}</strong></td>
-        <td><strong>${b.modelId}</strong></td>
+        <td>
+          <strong style="font-size: 13.5px; font-family: var(--font-mono); color: #0f172a;">${sticker.shiftBatchCode}</strong>
+          <div style="font-size: 10.5px; color: #64748b; font-weight: 600; font-family: var(--font-mono); margin-top: 2px;">
+            <i class="ri-calendar-line" style="color: #0284c7;"></i> ${sticker.batchDate}
+          </div>
+        </td>
+        <td><strong>${b.modelName || b.modelId}</strong></td>
         <td style="font-family: var(--font-mono); font-size: 11px; font-weight: 700;">MC-${b.machineNo || '18'}</td>
         <td style="font-family: var(--font-mono); font-size: 11px;">${producedTime}</td>
         <td><strong>${b.completedCount || 0} / ${b.batchSize || 0}</strong></td>
@@ -1584,7 +1665,7 @@ function resetModalScanState(modalType, batchNumber) {
   }
   if (descEl) {
     descEl.style.color = '#b45309';
-    descEl.textContent = `Scan barcode on Box #${batchNumber} to verify in hand`;
+    descEl.textContent = `Scan barcode on Box ${batchNumber} to verify in hand`;
   }
   if (pillEl) {
     pillEl.className = 'badge';
@@ -1628,7 +1709,7 @@ function handleModalScanVerification(qrData) {
     }
     if (descEl) {
       descEl.style.color = '#166534';
-      descEl.textContent = `Box #${targetBatchStr} barcode scanned and confirmed.`;
+      descEl.textContent = `Box ${targetBatchStr} barcode scanned and confirmed.`;
     }
     if (pillEl) {
       pillEl.className = 'badge badge-success';
@@ -1675,7 +1756,7 @@ function handleModalScanVerification(qrData) {
   } else {
     sounds.playViolation();
     if (errEl) {
-      errEl.textContent = `PHYSICAL SCAN MISMATCH: Scanned "${scanned}" does not match Box #${targetBatchStr}!`;
+      errEl.textContent = `PHYSICAL SCAN MISMATCH: Scanned "${scanned}" does not match Box ${targetBatchStr}!`;
       errEl.style.display = 'block';
     }
     if (cardEl) {
@@ -1688,7 +1769,7 @@ function handleModalScanVerification(qrData) {
     }
     if (descEl) {
       descEl.style.color = '#dc2626';
-      descEl.textContent = `Scanned barcode does not match Box #${targetBatchStr}!`;
+      descEl.textContent = `Scanned barcode does not match Box ${targetBatchStr}!`;
     }
     if (pillEl) {
       pillEl.className = 'badge badge-danger';
@@ -1699,22 +1780,25 @@ function handleModalScanVerification(qrData) {
   }
 }
 
-function openHoldModal(boxId, batchNumber, modelId, qty, encodedQr = '') {
+function openHoldModal(boxId, stickerCodeRaw, modelNameRaw, qty, encodedQr = '') {
   if (window.sounds) window.sounds.playClick();
+  const stickerCode = decodeURIComponent(stickerCodeRaw || '');
+  const modelName = decodeURIComponent(modelNameRaw || '');
+
   activeModalBoxId = boxId;
-  activeModalBatchNumber = batchNumber;
+  activeModalBatchNumber = stickerCode;
   activeModalQrData = decodeURIComponent(encodedQr || '');
   activeModalType = 'hold';
   activeModalVerified = false;
 
   const title = document.getElementById('modal-hold-title');
-  if (title) title.textContent = `PUT BOX #${batchNumber} ON HOLD`;
+  if (title) title.textContent = `PUT BOX ${stickerCode} ON HOLD`;
 
   const label = document.getElementById('modal-hold-box-label');
-  if (label) label.textContent = `BOX #${batchNumber}`;
+  if (label) label.textContent = `BOX ${stickerCode}`;
 
   const meta = document.getElementById('modal-hold-box-meta');
-  if (meta) meta.textContent = `Model: ${modelId || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
+  if (meta) meta.textContent = `Model: ${modelName || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
 
   const errEl = document.getElementById('modal-hold-error');
   if (errEl) {
@@ -1770,7 +1854,7 @@ async function submitHoldModal() {
 
   if (!activeModalVerified) {
     if (errEl) {
-      errEl.textContent = `PHYSICAL SCAN MANDATORY: Please scan Box #${activeModalBatchNumber} barcode to authorize hold.`;
+      errEl.textContent = `PHYSICAL SCAN MANDATORY: Please scan Box ${activeModalBatchNumber} barcode to authorize hold.`;
       errEl.style.display = 'block';
     }
     sounds.playViolation();
@@ -1795,22 +1879,25 @@ async function submitHoldModal() {
   }
 }
 
-function openReleaseModal(boxId, batchNumber, modelId, qty, encodedQr = '') {
+function openReleaseModal(boxId, stickerCodeRaw, modelNameRaw, qty, encodedQr = '') {
   if (window.sounds) window.sounds.playClick();
+  const stickerCode = decodeURIComponent(stickerCodeRaw || '');
+  const modelName = decodeURIComponent(modelNameRaw || '');
+
   activeModalBoxId = boxId;
-  activeModalBatchNumber = batchNumber;
+  activeModalBatchNumber = stickerCode;
   activeModalQrData = decodeURIComponent(encodedQr || '');
   activeModalType = 'release';
   activeModalVerified = false;
 
   const title = document.getElementById('modal-release-title');
-  if (title) title.textContent = `RELEASE BOX #${batchNumber}`;
+  if (title) title.textContent = `RELEASE BOX ${stickerCode}`;
 
   const label = document.getElementById('modal-release-box-label');
-  if (label) label.textContent = `BOX #${batchNumber}`;
+  if (label) label.textContent = `BOX ${stickerCode}`;
 
   const meta = document.getElementById('modal-release-box-meta');
-  if (meta) meta.textContent = `Model: ${modelId || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
+  if (meta) meta.textContent = `Model: ${modelName || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
 
   const errEl = document.getElementById('modal-release-error');
   if (errEl) {
@@ -1848,7 +1935,7 @@ async function submitReleaseModal() {
 
   if (!activeModalVerified) {
     if (errEl) {
-      errEl.textContent = `PHYSICAL SCAN MANDATORY: Please scan Box #${activeModalBatchNumber} barcode to authorize release.`;
+      errEl.textContent = `PHYSICAL SCAN MANDATORY: Please scan Box ${activeModalBatchNumber} barcode to authorize release.`;
       errEl.style.display = 'block';
     }
     sounds.playViolation();
@@ -1875,22 +1962,25 @@ async function quickReleaseHold(boxId, batchNumber, modelId, qty, encodedQr = ''
   openReleaseModal(boxId, batchNumber, modelId, qty, encodedQr);
 }
 
-function openRejectModal(boxId, batchNumber, modelId, qty, encodedQr = '') {
+function openRejectModal(boxId, stickerCodeRaw, modelNameRaw, qty, encodedQr = '') {
   if (window.sounds) window.sounds.playClick();
+  const stickerCode = decodeURIComponent(stickerCodeRaw || '');
+  const modelName = decodeURIComponent(modelNameRaw || '');
+
   activeModalBoxId = boxId;
-  activeModalBatchNumber = batchNumber;
+  activeModalBatchNumber = stickerCode;
   activeModalQrData = decodeURIComponent(encodedQr || '');
   activeModalType = 'reject';
   activeModalVerified = false;
 
   const title = document.getElementById('modal-reject-title');
-  if (title) title.textContent = `REJECT BOX #${batchNumber}`;
+  if (title) title.textContent = `REJECT BOX ${stickerCode}`;
 
   const label = document.getElementById('modal-reject-box-label');
-  if (label) label.textContent = `BOX #${batchNumber}`;
+  if (label) label.textContent = `BOX ${stickerCode}`;
 
   const meta = document.getElementById('modal-reject-box-meta');
-  if (meta) meta.textContent = `Model: ${modelId || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
+  if (meta) meta.textContent = `Model: ${modelName || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
 
   const errEl = document.getElementById('modal-reject-error');
   if (errEl) {
@@ -1946,7 +2036,7 @@ async function submitRejectModal() {
 
   if (!activeModalVerified) {
     if (errEl) {
-      errEl.textContent = `PHYSICAL SCAN MANDATORY: Please scan Box #${activeModalBatchNumber} barcode to authorize rejection.`;
+      errEl.textContent = `PHYSICAL SCAN MANDATORY: Please scan Box ${activeModalBatchNumber} barcode to authorize rejection.`;
       errEl.style.display = 'block';
     }
     sounds.playViolation();
@@ -1971,22 +2061,25 @@ async function submitRejectModal() {
   }
 }
 
-function openReopenModal(boxId, batchNumber, modelId, qty, encodedQr = '') {
+function openReopenModal(boxId, stickerCodeRaw, modelNameRaw, qty, encodedQr = '') {
   if (window.sounds) window.sounds.playClick();
+  const stickerCode = decodeURIComponent(stickerCodeRaw || '');
+  const modelName = decodeURIComponent(modelNameRaw || '');
+
   activeModalBoxId = boxId;
-  activeModalBatchNumber = batchNumber;
+  activeModalBatchNumber = stickerCode;
   activeModalQrData = decodeURIComponent(encodedQr || '');
   activeModalType = 'reopen';
   activeModalVerified = false;
 
   const title = document.getElementById('modal-reopen-title');
-  if (title) title.textContent = `REOPEN BOX #${batchNumber}`;
+  if (title) title.textContent = `REOPEN BOX ${stickerCode}`;
 
   const label = document.getElementById('modal-reopen-box-label');
-  if (label) label.textContent = `BOX #${batchNumber}`;
+  if (label) label.textContent = `BOX ${stickerCode}`;
 
   const meta = document.getElementById('modal-reopen-box-meta');
-  if (meta) meta.textContent = `Model: ${modelId || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
+  if (meta) meta.textContent = `Model: ${modelName || '--'} • Qty: ${qty != null ? qty : '--'} PCS`;
 
   const errEl = document.getElementById('modal-reopen-error');
   if (errEl) {
@@ -2247,10 +2340,11 @@ async function executeTrace(query) {
     if (resultsContainer) resultsContainer.style.display = 'block';
 
     // 1. Compact Box Header
-    document.getElementById('trace-box-title').textContent = `BOX #${box.batchNumber} - ${box.modelName || box.modelId}`;
+    const sticker = getBoxStickerInfo(box);
+    document.getElementById('trace-box-title').textContent = `BOX ${sticker.shiftBatchCode} - ${box.modelName || box.modelId}`;
     document.getElementById('trace-customer-name').innerHTML = `<i class="ri-building-line"></i> ${box.customerName || 'Mahindra & Mahindra Powertrain'}`;
-    document.getElementById('trace-customer-part').textContent = box.customerPartNo || 'N/A';
-    document.getElementById('trace-model-id').textContent = box.modelId;
+    document.getElementById('trace-customer-part').textContent = sticker.customerPartNo || box.customerPartNo || 'N/A';
+    document.getElementById('trace-model-id').textContent = box.modelName || box.modelId;
 
     // Status Badge
     const statusMap = {
@@ -2406,7 +2500,7 @@ function openSerialsModal() {
     const statusNote = isPartial
       ? ` &bull; <span style="color: #b45309; font-weight: 700;">Partial Box (${shortCount} short of ${_currentTracedBox.batchSize})</span>`
       : ' &bull; <span style="color: #15803d; font-weight: 700;">Full Standard Box</span>';
-    sub.innerHTML = `Box #${_currentTracedBox.batchNumber} &bull; Model ${_currentTracedBox.modelId} &bull; ${_currentTracedSerials.length} Serialized Parts${statusNote}`;
+    sub.innerHTML = `Box #${_currentTracedBox.batchNumber} &bull; Model ${_currentTracedBox.modelName || _currentTracedBox.modelId} &bull; ${_currentTracedSerials.length} Serialized Parts${statusNote}`;
   }
   renderModalSerials(_currentTracedSerials);
   if (modal) modal.style.display = 'flex';
@@ -2456,7 +2550,7 @@ async function loadReportsView() {
         modelsRes.models.forEach(m => {
           const opt = document.createElement('option');
           opt.value = m.modelId;
-          opt.textContent = m.modelName ? `${m.modelId} (${m.modelName})` : m.modelId;
+          opt.textContent = m.modelName || m.modelId;
           modelSelect.appendChild(opt);
         });
       }
@@ -2685,7 +2779,7 @@ async function applyReportsFilter(page = 1) {
         </td>
         <td style="font-family: var(--font-mono); font-size: 11px;">${timeStr}</td>
         <td>${statusBadge}</td>
-        <td><strong>${tx.modelId}</strong></td>
+        <td><strong>${tx.modelName || tx.modelId}</strong></td>
         <td>${progressDisplay}</td>
         <td>${partsDisplay}</td>
         <td style="color: var(--text-secondary);">${tx.operatorFullName || tx.operatorUsername || '--'}</td>
@@ -2735,7 +2829,7 @@ async function showDispatchDetails(dispatchId) {
       dspIdEl.textContent = b.dispatchId || dispatchId;
     }
     if (modelEl) {
-      modelEl.textContent = b.modelId || '--';
+      modelEl.textContent = b.modelName || b.modelId || '--';
     }
     if (operatorEl) {
       operatorEl.textContent = b.operatorFullName || b.operatorUsername || '--';
@@ -3218,10 +3312,15 @@ function buildManifestHTML({ title, docId, status, isCompleted, meta, boxes, inc
     }
 
     const dateStr = b.closedAt ? new Date(b.closedAt).toISOString().slice(0, 16).replace('T', ' ') : '--';
+    const sticker = getBoxStickerInfo(b);
+
     return `
       <tr>
         <td style="color:#64748b;font-weight:600;">${idx + 1}</td>
-        <td class="box-id">BOX-${b.batchNumber}</td>
+        <td class="box-id">
+          <div style="font-weight:700;color:#0f172a;">${sticker.shiftBatchCode}</div>
+          <div style="font-size:7.5pt;color:#64748b;font-weight:600;">Date: ${sticker.batchDate} | Part: ${sticker.customerPartNo}</div>
+        </td>
         <td>${dateStr}</td>
         <td class="parts-val">${b.completedCount} PCS</td>
         <td class="status-cell">${badge}</td>
@@ -3363,7 +3462,7 @@ async function openDispatchBill(dispatchId) {
 
     document.getElementById('bill-dispatch-id').textContent = bill.dispatchId;
     document.getElementById('bill-date').textContent = new Date(bill.completedAt || bill.startedAt).toLocaleString();
-    document.getElementById('bill-model-name').textContent = `${bill.modelId} (${bill.modelName})`;
+    document.getElementById('bill-model-name').textContent = bill.modelName || bill.modelId;
     document.getElementById('bill-customer-part').textContent = bill.customerPartNo;
     document.getElementById('bill-internal-part').textContent = bill.internalPartId;
     document.getElementById('bill-operator').textContent = bill.operatorFullName || bill.operatorUsername;
@@ -3396,11 +3495,16 @@ async function openDispatchBill(dispatchId) {
     bill.boxes.forEach((b, idx) => {
       const hasSerials = b.serialNumbers && b.serialNumbers.length > 0;
       const statusBadge = `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#15803d;border:1px solid #86efac;padding:2px 9px;border-radius:20px;font-size:7.5pt;font-weight:700;">&#10003; VERIFIED</span>`;
+      const sticker = getBoxStickerInfo(b);
+
       const tr = document.createElement('tr');
       tr.style.background = idx % 2 === 1 ? '#f8fafc' : '';
       tr.innerHTML = `
         <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;color:#64748b;font-weight:600;">${idx + 1}</td>
-        <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;color:#0284c7;font-weight:700;font-family:monospace;">BOX-${b.batchNumber}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;">
+          <div style="color:#0f172a;font-weight:700;font-family:monospace;">${sticker.shiftBatchCode}</div>
+          <div style="font-size:7.5pt;color:#64748b;font-weight:600;">Date: ${sticker.batchDate} | Part: ${sticker.customerPartNo}</div>
+        </td>
         <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;">${new Date(b.closedAt).toISOString().slice(0, 16).replace('T', ' ')}</td>
         <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;text-align:center;font-weight:700;">${b.completedCount} PCS</td>
         <td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;text-align:center;">${statusBadge}</td>`;
@@ -3441,7 +3545,7 @@ async function printDispatchBill() {
 
   const meta = [
     ['Dispatch Date:', new Date(bill.completedAt || bill.startedAt).toLocaleString()],
-    ['Model / Product:', `${bill.modelId} (${bill.modelName})`],
+    ['Model / Product:', bill.modelName || bill.modelId],
     ['Customer Part No:', bill.customerPartNo],
     ['Internal Part ID:', bill.internalPartId],
     ['Dispatched By:', operatorName],
@@ -3465,31 +3569,29 @@ async function printDispatchBill() {
 
 // ─── PENDING DISPATCH MANIFEST ────────────────────────────────────────────────
 async function printPendingManifest() {
-  const tbody = document.getElementById('fifo-pick-tbody');
-  if (!tbody || !tbody.querySelector('tr[data-box-id]')) {
+  if (!activeTx || !activeTx.allocatedBoxes || activeTx.allocatedBoxes.length === 0) {
     await customModal.alert('No active dispatch session to print.', { title: 'NO ACTIVE SESSION', type: 'warning' });
     return;
   }
 
-  const orderId = document.getElementById('active-tx-id')?.textContent || '--';
-  const model = document.getElementById('active-tx-model')?.textContent || '--';
-  const operator = document.getElementById('active-tx-operator')?.textContent || '--';
-  const target = document.getElementById('active-tx-target')?.textContent || '--';
+  const orderId = activeTx.dispatchId || '--';
+  const model = activeTx.modelName || activeTx.modelId || '--';
+  const operator = activeTx.operatorFullName || activeTx.operatorUsername || '--';
+  const target = `${activeTx.targetQuantity} ${activeTx.targetType ? activeTx.targetType.toUpperCase() : 'BOXES'}`;
 
-  // Build boxes from the pick table
-  const boxes = [];
-  tbody.querySelectorAll('tr[data-box-id]').forEach(tr => {
-    const cells = tr.querySelectorAll('td');
-    if (cells.length < 5) return;
-    const isPending = !!tr.querySelector('.badge-pending');
-    const batchText = cells[1].textContent.trim().replace('BOX-', '');
-    boxes.push({
-      batchNumber: batchText,
-      closedAt: cells[2].textContent.trim(),
-      completedCount: parseInt(cells[3].textContent) || 0,
-      serialNumbers: [],
-      verified: !isPending
-    });
+  const scannedBoxIds = (activeTx.scannedBoxes || []).map(s => s.boxId.toString());
+
+  const boxes = activeTx.allocatedBoxes.map(box => {
+    return {
+      boxId: box.boxId,
+      batchNumber: box.batchNumber,
+      completedCount: box.completedCount,
+      batchQrData: box.batchQrData,
+      closedAt: box.closedAt,
+      customerPartNo: box.customerPartNo || activeTx.customerPartNo || '',
+      serialNumbers: box.serialNumbers || [],
+      verified: scannedBoxIds.includes(box.boxId.toString())
+    };
   });
 
   const meta = [
@@ -4675,3 +4777,27 @@ window.printDispatchBill = printDispatchBill;
 window.printPendingManifest = printPendingManifest;
 window.toggleManifestSerials = toggleManifestSerials;
 window.toggleUserDropdown = toggleUserDropdown;
+
+function clearTraceInput() {
+  const input = document.getElementById('trace-query-input');
+  if (input) {
+    input.value = '';
+    input.focus();
+  }
+  const inlineClearBtn = document.getElementById('trace-clear-btn');
+  if (inlineClearBtn) inlineClearBtn.style.display = 'none';
+
+  const resultsContainer = document.getElementById('trace-results-container');
+  const emptyState = document.getElementById('trace-empty-state');
+  if (resultsContainer) resultsContainer.style.display = 'none';
+  if (emptyState) emptyState.style.display = 'block';
+}
+
+function toggleTraceClearIcon(val) {
+  const inlineClearBtn = document.getElementById('trace-clear-btn');
+  if (inlineClearBtn) {
+    inlineClearBtn.style.display = (val && val.trim().length > 0) ? 'block' : 'none';
+  }
+}
+window.clearTraceInput = clearTraceInput;
+window.toggleTraceClearIcon = toggleTraceClearIcon;

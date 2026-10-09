@@ -11,11 +11,15 @@ router.post('/login', async (req, res) => {
         const { username, password } = req.body;
         const result = await authService.login(username, password);
 
-        // Auto-cleanup any dangling in_progress dispatches for this user or older than 30 mins
-        await autoCleanupOpenDispatches({
-            operatorUsername: result.user ? result.user.username : username,
-            reason: `Session closed upon fresh login by ${username}`
-        });
+        // Auto-cleanup any dangling in_progress dispatches for this user or older than 30 mins (if DB is online)
+        try {
+            await autoCleanupOpenDispatches({
+                operatorUsername: result.user ? result.user.username : username,
+                reason: `Session closed upon fresh login by ${username}`
+            });
+        } catch (cleanupErr) {
+            console.warn('[LOGIN CLEANUP NOTICE]', cleanupErr.message);
+        }
 
         res.json({ success: true, ...result });
     } catch (err) {
@@ -28,10 +32,14 @@ router.post('/logout', authenticate, async (req, res) => {
     try {
         const username = req.user && req.user.username;
         if (username) {
-            await autoCleanupOpenDispatches({
-                operatorUsername: username,
-                reason: `Session closed upon operator logout (${username})`
-            });
+            try {
+                await autoCleanupOpenDispatches({
+                    operatorUsername: username,
+                    reason: `Session closed upon operator logout (${username})`
+                });
+            } catch (cleanupErr) {
+                console.warn('[LOGOUT CLEANUP NOTICE]', cleanupErr.message);
+            }
         }
         res.json({ success: true, message: 'Logged out successfully' });
     } catch (err) {

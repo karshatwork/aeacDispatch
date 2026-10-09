@@ -368,37 +368,56 @@
                   <span>OPERATOR: <strong id="active-tx-operator" style="color: var(--text-secondary);">...</strong></span>
                 </div>
               </div>
-              <div class="scada-panel-body" style="padding: 10px 16px;">
-                <div class="dispatch-telemetry-body-grid">
+              <div class="scada-panel-body" style="padding: 12px 16px;">
+                <div style="display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap;">
                   <!-- Progress Pod -->
-                  <div class="telemetry-progress-column">
-                    <div class="telemetry-metrics-row">
-                      <div class="telemetry-metric-pill">
-                        <span class="metric-label">SCANNED BOXES</span>
-                        <strong id="dispatch-radial-boxes" class="metric-val text-cyan">0 / 0</strong>
+                  <div style="flex: 1; min-width: 280px; display: flex; flex-direction: column; justify-content: center; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; padding: 12px 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                      <span style="font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em; color: var(--text-muted);">ORDER FULFILLMENT METRICS</span>
+                      <span id="dispatch-radial-pct" style="font-weight: 800; font-family: var(--font-mono); font-size: 16px; color: var(--color-primary);">0%</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                      <div style="background: #ffffff; border: 1px solid var(--border-light); padding: 6px 12px; border-radius: 6px;">
+                        <div style="font-size: 9.5px; color: var(--text-muted); font-weight: 700;">SCANNED BOXES</div>
+                        <div id="dispatch-radial-boxes" style="font-size: 14px; font-weight: 800; font-family: var(--font-mono); color: #0284c7;">0 / 0</div>
                       </div>
-                      <div class="telemetry-metric-pill">
-                        <span class="metric-label">TOTAL PARTS</span>
-                        <strong id="dispatch-radial-parts" class="metric-val text-emerald">0 / 0</strong>
-                      </div>
-                      <div class="telemetry-metric-pill">
-                        <span class="metric-label">ORDER PROGRESS</span>
-                        <strong id="dispatch-radial-pct" class="metric-val text-primary">0%</strong>
+                      <div style="background: #ffffff; border: 1px solid var(--border-light); padding: 6px 12px; border-radius: 6px;">
+                        <div style="font-size: 9.5px; color: var(--text-muted); font-weight: 700;">TOTAL PARTS</div>
+                        <div id="dispatch-radial-parts" style="font-size: 14px; font-weight: 800; font-family: var(--font-mono); color: #059669;">0 / 0</div>
                       </div>
                     </div>
-                    <div class="telemetry-progress-track">
-                      <div id="dispatch-progress-fill" class="telemetry-progress-fill" style="width: 0%;"></div>
+                    <!-- Progress Bar Track -->
+                    <div style="background: #e2e8f0; height: 8px; border-radius: 4px; overflow: hidden;">
+                      <div id="dispatch-progress-fill" style="width: 0%; height: 100%; background: #0284c7; transition: width 0.3s ease;"></div>
                     </div>
                   </div>
 
-                  <!-- Next FIFO Target Card -->
-                  <div class="telemetry-fifo-guidance-card">
-                    <div class="fifo-guidance-header">
-                      <span><i class="ri-focus-3-line"></i> NEXT FIFO TARGET</span>
+                  <!-- Next FIFO Target Physical Sticker Card -->
+                  <div class="telemetry-fifo-guidance-card" style="flex: 1.2; min-width: 320px; padding: 12px 16px; background: #ffffff; border: 1.5px solid #0284c7; border-radius: 8px; box-shadow: 0 2px 6px rgba(2, 132, 199, 0.08); display: flex; flex-direction: column; justify-content: center;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed #cbd5e1; padding-bottom: 6px; margin-bottom: 8px;">
+                      <span style="font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em; color: #0284c7; display: flex; align-items: center; gap: 5px;">
+                        <i class="ri-price-tag-3-line" style="font-size: 14px;"></i> TARGET STICKER (MATCH PHYSICAL LABEL ON BOX)
+                      </span>
+                      <span id="reticle-sticker-qty" style="background: #e0f2fe; color: #0369a1; font-weight: 800; font-size: 11px; font-family: var(--font-mono); padding: 2px 8px; border-radius: 4px;">-- PCS</span>
                     </div>
-                    <div class="fifo-target-inline-row">
-                      <span id="reticle-next-batch" class="fifo-batch-hero">BATCH #--</span>
-                      <span id="reticle-next-sub" class="fifo-sub-hero">&bull; Produced: YYYY-MM-DD &bull; Qty: -- Parts</span>
+                    
+                    <div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 6px 14px; font-size: 11px;">
+                      <div>
+                        <div style="font-size: 9.5px; color: #64748b; font-weight: 700; text-transform: uppercase;">BATCH / SHIFT CODE</div>
+                        <div id="reticle-sticker-code" style="font-family: var(--font-mono); font-weight: 800; font-size: 15px; color: #0f172a;">--</div>
+                      </div>
+                      <div>
+                        <div style="font-size: 9.5px; color: #64748b; font-weight: 700; text-transform: uppercase;">CUSTOMER PART NO</div>
+                        <div id="reticle-sticker-custpart" style="font-family: var(--font-mono); font-weight: 800; font-size: 12.5px; color: #0284c7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">--</div>
+                      </div>
+                      <div>
+                        <div style="font-size: 9.5px; color: #64748b; font-weight: 700; text-transform: uppercase;">PRODUCED DATE</div>
+                        <div id="reticle-sticker-date" style="font-family: var(--font-mono); font-weight: 700; color: #334155;">--</div>
+                      </div>
+                      <div>
+                        <div style="font-size: 9.5px; color: #64748b; font-weight: 700; text-transform: uppercase;">MODEL NAME</div>
+                        <div id="reticle-sticker-model" style="font-family: var(--font-mono); font-weight: 700; color: #334155;">--</div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -421,7 +440,8 @@
                   <thead>
                     <tr>
                       <th>RANK</th>
-                      <th>BOX / BATCH NO</th>
+                      <th>BATCH / SHIFT CODE</th>
+                      <th>CUSTOMER PART NO</th>
                       <th>PRODUCED AT</th>
                       <th>PARTS</th>
                       <th>STATUS</th>
@@ -528,12 +548,12 @@
 
                   <div style="flex: 2; min-width: 220px;">
                     <label class="form-label" style="font-size: 10.5px; letter-spacing: 0.04em;"><i
-                        class="ri-search-line"></i> SEARCH BOX # / SERIAL / QR / REF</label>
+                        class="ri-search-line"></i> SEARCH STICKER CODE / SERIAL / QR / REF</label>
                     <div class="input-with-icon">
                       <i class="ri-search-line"></i>
                       <input type="text" id="inv-filter-search" class="form-control"
                         style="height: 36px; font-size: 12px; padding-left: 34px !important;"
-                        placeholder="Search Box #, Serial SN-..., QR, Hold or Rejection ID..."
+                        placeholder="Search Sticker Code 1A(17), Customer Part No, Serial, QR, or Ref ID..."
                         onkeydown="if(event.key==='Enter') executeInventorySearch()">
                     </div>
                   </div>
@@ -555,7 +575,7 @@
               <table class="scada-table" style="margin-bottom: 0;">
                 <thead>
                   <tr>
-                    <th style="width: 100px;">BOX #</th>
+                    <th style="width: 140px;">STICKER CODE</th>
                     <th>MODEL</th>
                     <th style="width: 90px;">MACHINE</th>
                     <th>PRODUCED AT</th>
@@ -602,15 +622,24 @@
           <!-- SEARCH DECK -->
           <div class="trace-search-bar">
             <div class="trace-search-input-wrap">
-              <div class="input-with-icon" style="flex: 1;">
+              <div class="input-with-icon" style="flex: 1; position: relative;">
                 <i class="ri-search-line"></i>
                 <input type="text" id="trace-query-input" class="form-control"
-                  style="height: 38px; font-size: 13px; padding-left: 36px !important;"
-                  placeholder="Enter Box Number (e.g. 1034), Serial Number (e.g. SN-M002-1034-001), or full QR Code..."
-                  onkeydown="if(event.key==='Enter') executeTrace()">
+                  style="height: 38px; font-size: 13px; padding-left: 36px !important; padding-right: 36px !important;"
+                  placeholder="Scan or paste 2D DataMatrix QR Code payload (e.g. *10156230|AE-33.0010.00|L003388589NCPAA|...*)"
+                  onkeydown="if(event.key==='Enter') executeTrace()"
+                  oninput="toggleTraceClearIcon(this.value)">
+                <button type="button" id="trace-clear-btn" onclick="clearTraceInput()" title="Clear search"
+                  style="display: none; position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: #94a3b8; cursor: pointer; font-size: 16px; padding: 2px; line-height: 1;"
+                  onmouseover="this.style.color='#64748b'" onmouseout="this.style.color='#94a3b8'">
+                  <i class="ri-close-circle-fill"></i>
+                </button>
               </div>
               <button class="btn-scada btn-primary" style="height: 38px; padding: 0 18px;" onclick="executeTrace()">
                 <i class="ri-search-line"></i> TRACE LIFECYCLE
+              </button>
+              <button class="btn-scada btn-secondary" style="height: 38px; padding: 0 14px;" onclick="clearTraceInput()" title="Clear search input and reset traceability view">
+                <i class="ri-restart-line"></i> CLEAR
               </button>
             </div>
           </div>
@@ -1612,7 +1641,7 @@
         <div style="background: #ffffff; border: 1px solid var(--border-panel); border-radius: var(--border-radius-sm); padding: 12px; margin-bottom: 4px;">
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; font-size: 11px;">
             <div>
-              <div style="color: var(--text-secondary); font-size: 10px; margin-bottom: 1px; font-weight: 600;">MODEL ID</div>
+              <div style="color: var(--text-secondary); font-size: 10px; margin-bottom: 1px; font-weight: 600;">MODEL NAME</div>
               <div id="modal-dtl-model" style="font-weight: 700; color: var(--text-heading); font-family: var(--font-mono);">--</div>
             </div>
             <div>

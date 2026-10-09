@@ -7,31 +7,33 @@ const { authenticate } = require('../middleware/authMiddleware');
 // GET /api/trace/:query - End-to-end box lifecycle traceability lookup
 router.get('/:query', authenticate, async (req, res) => {
     try {
-        const query = req.params.query.trim();
-        // Support searching by raw input, as well as stripped "BOX #1001", "#1001", "BOX 1001"
-        const cleanBoxStr = query.replace(/^(BOX\s*#?|#)\s*/i, '').trim();
-        const num = /^\d+$/.test(cleanBoxStr) ? parseInt(cleanBoxStr, 10) : null;
+        const { getStatus } = require('../config/db');
+        if (!getStatus().isConnected) {
+            return res.status(503).json({
+                success: false,
+                error: 'Database is offline (Safe Mode). Traceability lookup requires database connection.'
+            });
+        }
 
+        const query = req.params.query.trim();
+        const stripAsterisks = (s) => (s || '').replace(/^\*+|\*+$/g, '').trim();
+        const cleanQuery = stripAsterisks(query);
+        const escapedQuery = cleanQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+        // Strictly search by 2D DataMatrix QR payload (batchQrData)
         const orConditions = [
             { batchQrData: query },
-            { serialNumbers: query }
+            { batchQrData: cleanQuery },
+            { batchQrData: `*${cleanQuery}*` },
+            { batchQrData: { $regex: escapedQuery, $options: 'i' } }
         ];
-
-        if (cleanBoxStr && cleanBoxStr !== query) {
-            orConditions.push({ batchQrData: cleanBoxStr });
-            orConditions.push({ serialNumbers: cleanBoxStr });
-        }
-
-        if (num !== null) {
-            orConditions.push({ batchNumber: num });
-        }
 
         const box = await DispatchBox.findOne({ $or: orConditions });
 
         if (!box) {
             return res.status(404).json({
                 success: false,
-                error: `No box found matching '${query}' (Search by Box No., Serial No., or QR payload)`
+                error: `No box found matching 2D DataMatrix QR payload '${query}'. Please scan or paste a valid 2D DataMatrix QR barcode string.`
             });
         }
 

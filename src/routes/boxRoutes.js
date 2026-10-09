@@ -93,6 +93,18 @@ function buildSearchFilter(search) {
 // GET /api/boxes - Query box inventory with multi-filtering
 router.get('/', authenticate, async (req, res) => {
     try {
+        const { getStatus } = require('../config/db');
+        if (!getStatus().isConnected) {
+            return res.json({
+                success: true,
+                boxes: [],
+                total: 0,
+                page: 1,
+                pages: 0,
+                offline: true
+            });
+        }
+
         const { modelId, status, dateFrom, dateTo, search, page = 1, limit = 50 } = req.query;
         const filter = {};
 
@@ -111,10 +123,19 @@ router.get('/', authenticate, async (req, res) => {
         }
 
         const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
-        const [boxes, total] = await Promise.all([
-            DispatchBox.find(filter).sort({ closedAt: -1 }).skip(skip).limit(parseInt(limit, 10)),
-            DispatchBox.countDocuments(filter)
+        const [rawBoxes, total, productModels] = await Promise.all([
+            DispatchBox.find(filter).sort({ closedAt: -1 }).skip(skip).limit(parseInt(limit, 10)).lean(),
+            DispatchBox.countDocuments(filter),
+            ProductModel.find({}).lean()
         ]);
+
+        const modelMap = {};
+        (productModels || []).forEach(m => { modelMap[m.modelId] = m.modelName; });
+
+        const boxes = rawBoxes.map(b => ({
+            ...b,
+            modelName: modelMap[b.modelId] || b.modelId
+        }));
 
         res.json({
             success: true,
@@ -194,10 +215,11 @@ router.get('/export-csv', authenticate, requireRole('supervisor'), async (req, r
 
         const boxes = await DispatchBox.find(filter).sort({ closedAt: -1 });
 
-        const csvRows = ['Box#,Model,Machine,Produced At,Quantity,Batch Size,Status,Reference ID,Remarks,Part Serials'];
+        const csvRows = ['Sticker Code,Model,Machine,Produced At,Quantity,Batch Size,Status,Reference ID,Remarks,Part Serials'];
         for (const b of boxes) {
             const producedAt = b.closedAt ? b.closedAt.toISOString().slice(0, 16).replace('T', ' ') : '';
             const refId = b.holdId || b.rejectionId || b.dispatchId || '';
+            const stickerCode = b.shiftCode && b.batchNumber ? `${b.shiftCode}(${b.batchNumber})` : (b.batchNumber ? `1A(${b.batchNumber})` : '');
             
             let remarksVal = '';
             if (b.status === 'dispatched') {
@@ -212,7 +234,7 @@ router.get('/export-csv', authenticate, requireRole('supervisor'), async (req, r
 
             const partSerials = (b.serialNumbers && b.serialNumbers.length) ? b.serialNumbers.join(';') : '';
             csvRows.push([
-                b.batchNumber,
+                `"${stickerCode}"`,
                 `"${(b.modelId || '').replace(/"/g, '""')}"`,
                 b.machineNo || '',
                 producedAt,

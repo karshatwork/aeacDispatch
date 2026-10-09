@@ -4,6 +4,8 @@ const mongoose = require('mongoose');
 const dispatchTransactionSchema = new mongoose.Schema({
     dispatchId: { type: String, required: true, unique: true, index: true }, // DSPYYYYMMDD0001
     modelId: { type: String, required: true, index: true },
+    modelName: { type: String, default: '' },
+    customerPartNo: { type: String, default: '' },
     targetType: { type: String, enum: ['boxes', 'parts'], required: true },
     targetQuantity: { type: Number, required: true },
     
@@ -21,6 +23,7 @@ const dispatchTransactionSchema = new mongoose.Schema({
         batchNumber: { type: Number, required: true },
         completedCount: { type: Number, required: true },
         batchQrData: { type: String, required: true },
+        customerPartNo: { type: String, default: '' },
         closedAt: { type: Date, required: true },
         serialNumbers: [{ type: String }]
     }],

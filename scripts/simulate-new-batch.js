@@ -39,9 +39,12 @@ const SCENARIOS = {
 };
 
 async function getNextBatchNumber() {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
     const [latestUpstream, latestDispatch] = await Promise.all([
-        Batch.findOne().sort({ batchNumber: -1 }).select('batchNumber').lean(),
-        DispatchBox.findOne().sort({ batchNumber: -1 }).select('batchNumber').lean()
+        Batch.findOne({ createdAt: { $gte: startOfDay } }).sort({ batchNumber: -1 }).select('batchNumber').lean(),
+        DispatchBox.findOne({ createdAt: { $gte: startOfDay } }).sort({ batchNumber: -1 }).select('batchNumber').lean()
     ]);
     const maxUpstream = latestUpstream ? latestUpstream.batchNumber : 1000;
     const maxDispatch = latestDispatch ? latestDispatch.batchNumber : 1000;
@@ -77,12 +80,26 @@ async function simulateBoxScenario(scenarioType, options = {}) {
         ? options.completedCount
         : (scenarioType === 'partial' ? (chosenModel === 'M002' ? 30 : Math.max(1, Math.floor(batchSize * 0.6))) : batchSize);
 
-    const serialNumbers = [];
-    for (let s = 1; s <= targetCount; s++) {
-        serialNumbers.push(`SN-${chosenModel}-${batchNumber}-${String(s).padStart(3, '0')}`);
+    function generateRealSerials(startOffset, count) {
+        const serials = [];
+        for (let i = 0; i < count; i++) {
+            let n = startOffset + i;
+            let c1 = String.fromCharCode(65 + (Math.floor(n / 676) % 26));
+            let c2 = String.fromCharCode(65 + (Math.floor(n / 26) % 26));
+            let c3 = String.fromCharCode(65 + (n % 26));
+            serials.push(`${c1}${c2}${c3}`);
+        }
+        return serials;
     }
 
-    const batchQrData = `*DEFAULT|${chosenModel}|${batchNumber}*`;
+    const serialNumbers = generateRealSerials(1000 + (batchNumber * batchSize), targetCount);
+    const revNo = (modelDoc?.productRevNo || 'Level 4').toUpperCase();
+    const swRev = (modelDoc?.softwareRevNo || 'SW2').toUpperCase();
+    const supplier = modelDoc?.supplierCode || (chosenModel === 'M002' ? 'ABH006' : '10156230');
+    const intPart = modelDoc?.internalPartId || (chosenModel === 'M002' ? 'AE-33.0006.00' : 'AE-33.0010.00');
+    const custPart = modelDoc?.customerPartNo || (chosenModel === 'M002' ? 'E4MV-24136' : 'L003388589NCPAA');
+
+    const batchQrData = `*${supplier}|${intPart}|${custPart}|${revNo}|${swRev}|${batchDate}|1A(${batchNumber})|${serialNumbers.join(', ')}*`;
 
     // 1. Create upstream production batch via native driver (bypassing read-only Mongoose guard)
     const insertResult = await mongoose.connection.db.collection('batches').insertOne({

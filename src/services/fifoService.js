@@ -1,14 +1,23 @@
 // src/services/fifoService.js
-const { DispatchBox, DispatchTransaction, BoxLifecycleEvent } = require('../models');
+const { DispatchBox, DispatchTransaction, BoxLifecycleEvent, ProductModel } = require('../models');
 const { generateId } = require('../utils/idGenerator');
+
+const { getStatus } = require('../config/db');
 
 /**
  * Plan and initialize a strict FIFO dispatch session
  */
 async function planDispatch({ modelId, targetType, targetQuantity, operatorUsername, operatorFullName }) {
+    if (!getStatus().isConnected) {
+        throw new Error('Database is offline (Safe Mode). Database connection required for dispatch operations.');
+    }
+
     if (!modelId || !targetType || !targetQuantity || targetQuantity <= 0) {
         throw new Error('Model, target type (boxes/parts), and positive target quantity are required');
     }
+
+    const modelDoc = await ProductModel.findOne({ modelId }).lean();
+    const modelName = modelDoc ? modelDoc.modelName : modelId;
 
     // Single active transaction constraint
     const activeTx = await DispatchTransaction.findOne({ status: 'in_progress' });
@@ -31,7 +40,7 @@ async function planDispatch({ modelId, targetType, targetQuantity, operatorUsern
     }).sort({ closedAt: 1 });
 
     if (availableBoxes.length === 0) {
-        throw new Error(`No available boxes found for model ${modelId}`);
+        throw new Error(`No available boxes found for ${modelName}`);
     }
 
     const allocated = [];
@@ -62,6 +71,8 @@ async function planDispatch({ modelId, targetType, targetQuantity, operatorUsern
         throw new Error(`Invalid target type: ${targetType}. Must be 'boxes' or 'parts'`);
     }
 
+    const customerPartNo = modelDoc ? modelDoc.customerPartNo : '';
+
     // Generate unique standardized ID: DSPYYYYMMDD0001
     const dispatchId = await generateId('DSP');
 
@@ -69,17 +80,26 @@ async function planDispatch({ modelId, targetType, targetQuantity, operatorUsern
     const newTransaction = await DispatchTransaction.create({
         dispatchId,
         modelId,
+        modelName,
+        customerPartNo,
         targetType,
         targetQuantity,
         status: 'in_progress',
-        allocatedBoxes: allocated.map(b => ({
-            boxId: b._id,
-            batchNumber: b.batchNumber,
-            completedCount: b.completedCount,
-            batchQrData: b.batchQrData,
-            closedAt: b.closedAt,
-            serialNumbers: b.serialNumbers || []
-        })),
+        allocatedBoxes: allocated.map(b => {
+            const rawQr = (b.batchQrData || '').replace(/^\*+|\*+$/g, '').trim();
+            const parts = rawQr.split('|');
+            const boxCustPart = parts[2] || b.customerPartNo || customerPartNo;
+
+            return {
+                boxId: b._id,
+                batchNumber: b.batchNumber,
+                completedCount: b.completedCount,
+                batchQrData: b.batchQrData,
+                customerPartNo: boxCustPart,
+                closedAt: b.closedAt,
+                serialNumbers: b.serialNumbers || []
+            };
+        }),
         scannedBoxes: [],
         dispatchedBoxCount: allocated.length,
         dispatchedPartCount: accumulatedCount,
@@ -124,10 +144,19 @@ async function verifyScan({ dispatchId, scannedPayload, operatorUsername }) {
     }
 
     const trimmedScan = scannedPayload.trim();
+    const stripAsterisks = (s) => (s || '').replace(/^\*+|\*+$/g, '').trim();
+    const cleanScan = stripAsterisks(trimmedScan);
 
     // Check if the scan matches any allocated box
-    // Strict match by exact batchQrData payload only
-    const matchedBox = tx.allocatedBoxes.find(b => b.batchQrData === trimmedScan);
+    // Matches by exact batchQrData, asterisk-stripped batchQrData, batchNumber, or serial number
+    const matchedBox = tx.allocatedBoxes.find(b => {
+        if (!b) return false;
+        if (b.batchQrData === trimmedScan) return true;
+        if (stripAsterisks(b.batchQrData) === cleanScan) return true;
+        if (String(b.batchNumber) === cleanScan) return true;
+        if (Array.isArray(b.serialNumbers) && b.serialNumbers.includes(cleanScan)) return true;
+        return false;
+    });
 
     if (matchedBox) {
         // Check if already scanned
@@ -323,6 +352,10 @@ async function cancelDispatch({ dispatchId, operatorUsername, reason }) {
  * Supports filtering by operatorUsername and/or maxAgeMinutes
  */
 async function autoCleanupOpenDispatches({ reason, operatorUsername = null, maxAgeMinutes = 0 } = {}) {
+    if (!getStatus().isConnected) {
+        return { closedCount: 0 };
+    }
+
     const filter = { status: 'in_progress' };
     if (operatorUsername) {
         filter.operatorUsername = operatorUsername;

@@ -20,6 +20,7 @@ async function connectDB(customUri = null) {
         }
 
         mongoose.set('strictQuery', false);
+        mongoose.set('bufferCommands', false);
 
         console.log(`[DATABASE] Attempting connection to: ${mongoUri.replace(/:([^:@]+)@/, ':****@')}...`);
         const conn = await mongoose.connect(mongoUri, {

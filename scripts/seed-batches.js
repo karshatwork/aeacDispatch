@@ -15,7 +15,16 @@
 const path = require('path');
 const mongoose = require('mongoose');
 
-// Initialize encrypted config environment
+// Support CLI URI or --local overrides before loading encrypted environment
+const uriArgIdx = process.argv.findIndex(a => a === '--uri' || a === '-u');
+const isLocal = process.argv.includes('--local') || process.argv.includes('-l');
+let cliUri = null;
+if (uriArgIdx !== -1 && process.argv[uriArgIdx + 1]) {
+    cliUri = process.argv[uriArgIdx + 1];
+} else if (isLocal) {
+    cliUri = 'mongodb://127.0.0.1:27017/plc_sticker';
+}
+
 try {
     const { initEnvironment } = require('../src/utils/cryptoConfig');
     initEnvironment();
@@ -23,14 +32,14 @@ try {
     require('dotenv').config({ path: path.join(__dirname, '../.env') });
 }
 
+const MONGO_URI = cliUri || process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/plc_sticker';
+
 const {
     ProductModel,
     DispatchBox,
     BoxLifecycleEvent,
     SyncState
 } = require('../src/models');
-
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/plc_sticker';
 
 // ANSI Colors for clean terminal UI
 const C = {
@@ -50,6 +59,7 @@ function parseArgs() {
     const args = process.argv.slice(2);
     let count = 10;
     let model = null;
+    let isDirect = args.includes('--direct');
 
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -69,93 +79,73 @@ function parseArgs() {
     }
 
     if (count <= 0) count = 10;
-    return { count, model };
+    return { count, model, isDirect };
 }
 
-// Fallback baseline models if database has none
+// Authentic production product models matching real plc_sticker database
 const DEFAULT_MODELS = [
     {
         modelId: 'M001',
-        modelName: 'MOD-ALU-HOUSING',
-        batchSize: 20,
-        supplierCode: 'S1042',
-        internalPartId: 'IP-HOUSING-01',
-        customerPartNo: '0303CAL00111N',
-        productRevNo: 'REV-A',
-        softwareRevNo: 'SW-1.4',
-        customerName: 'Mahindra & Mahindra Powertrain',
-        logoText: 'MAHINDRA',
+        modelName: 'AE-33.0010.00 - Lear Part',
+        batchSize: 60,
+        supplierCode: '10156230',
+        internalPartId: 'AE-33.0010.00',
+        customerPartNo: 'L003388589NCPAA',
+        productRevNo: 'Level 4',
+        softwareRevNo: 'SW2',
+        customerName: 'LEAR Corporation',
+        logoText: 'LEAR',
         serialPrnTemplate: 'serial_template.prn',
         batchPrnTemplate: 'batch_template.prn',
         active: true
     },
     {
         modelId: 'M002',
-        modelName: 'MOD-STEEL-FLANGE',
-        batchSize: 50,
-        supplierCode: 'S1042',
-        internalPartId: 'IP-FLANGE-02',
-        customerPartNo: '0303CSL00222N',
-        productRevNo: 'REV-B',
-        softwareRevNo: 'SW-1.4',
-        customerName: 'Mahindra & Mahindra Powertrain',
-        logoText: 'MAHINDRA',
-        serialPrnTemplate: 'serial_template.prn',
-        batchPrnTemplate: 'batch_template.prn',
-        active: true
-    },
-    {
-        modelId: 'M003',
-        modelName: 'MOD-GEAR-PINION',
-        batchSize: 25,
-        supplierCode: 'S1042',
-        internalPartId: 'IP-PINION-03',
-        customerPartNo: 'TM-9821-GP-03',
-        productRevNo: 'REV-C',
-        softwareRevNo: 'SW-2.0',
-        customerName: 'Tata Motors Commercial Vehicles',
-        logoText: 'TATA',
-        serialPrnTemplate: 'serial_template.prn',
-        batchPrnTemplate: 'batch_template.prn',
-        active: true
-    },
-    {
-        modelId: 'M004',
-        modelName: 'MOD-CLUTCH-COLLAR',
-        batchSize: 30,
-        supplierCode: 'S1042',
-        internalPartId: 'IP-COLLAR-04',
-        customerPartNo: 'BGL-CC-4004',
-        productRevNo: 'REV-A',
-        softwareRevNo: 'SW-1.1',
-        customerName: 'BGL Industrial Transmission',
-        logoText: 'BGL',
+        modelName: 'AE-33.0006.00 - MSKH Part',
+        batchSize: 60,
+        supplierCode: 'ABH006',
+        internalPartId: 'AE-33.0006.00',
+        customerPartNo: 'E4MV-24136',
+        productRevNo: 'Level 4',
+        softwareRevNo: 'SW2',
+        customerName: 'MSKH Seatings',
+        logoText: 'MSKH',
         serialPrnTemplate: 'serial_template.prn',
         batchPrnTemplate: 'batch_template.prn',
         active: true
     }
 ];
 
-async function ensureProductModels(db) {
-    let models = await ProductModel.find({ active: true }).lean();
-    if (!models || models.length === 0) {
-        console.log(`${C.yellow}ℹ No active models found in database. Seeding standard product models...${C.reset}`);
-        for (const m of DEFAULT_MODELS) {
-            await db.collection('productmodels').updateOne(
-                { modelId: m.modelId },
-                { $set: m },
-                { upsert: true }
-            );
-        }
-        models = await ProductModel.find({ active: true }).lean();
+function generateRealSerials(startOffset, count) {
+    const serials = [];
+    for (let i = 0; i < count; i++) {
+        let n = startOffset + i;
+        let c1 = String.fromCharCode(65 + (Math.floor(n / 676) % 26));
+        let c2 = String.fromCharCode(65 + (Math.floor(n / 26) % 26));
+        let c3 = String.fromCharCode(65 + (n % 26));
+        serials.push(`${c1}${c2}${c3}`);
     }
-    return models;
+    return serials;
+}
+
+async function ensureProductModels(db) {
+    for (const m of DEFAULT_MODELS) {
+        await db.collection('productmodels').updateOne(
+            { modelId: m.modelId },
+            { $set: m },
+            { upsert: true }
+        );
+    }
+    return ProductModel.find({ active: true }).lean();
 }
 
 async function getNextBatchNumber(db) {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
     const [latestUpstream, latestDispatch] = await Promise.all([
-        db.collection('batches').findOne({}, { sort: { batchNumber: -1 }, projection: { batchNumber: 1 } }),
-        DispatchBox.findOne().sort({ batchNumber: -1 }).select('batchNumber').lean()
+        db.collection('batches').findOne({ createdAt: { $gte: startOfDay } }, { sort: { batchNumber: -1 }, projection: { batchNumber: 1 } }),
+        DispatchBox.findOne({ createdAt: { $gte: startOfDay } }).sort({ batchNumber: -1 }).select('batchNumber').lean()
     ]);
     const maxUpstream = latestUpstream ? latestUpstream.batchNumber : 1000;
     const maxDispatch = latestDispatch ? latestDispatch.batchNumber : 1000;
@@ -163,7 +153,7 @@ async function getNextBatchNumber(db) {
 }
 
 async function seedBatches() {
-    const { count: qtyPerModel, model: targetModel } = parseArgs();
+    const { count: qtyPerModel, model: targetModel, isDirect } = parseArgs();
 
     console.log(`\n${C.bright}${C.cyan}╔════════════════════════════════════════════════════════════════════════════════╗${C.reset}`);
     console.log(`${C.bright}${C.cyan}║             📦 RECORDKEEPER DISPATCH - FRESH BATCHES SEEDER                    ║${C.reset}`);
@@ -194,10 +184,13 @@ async function seedBatches() {
     let currentBatchNumber = await getNextBatchNumber(db);
     const startBatchNumber = currentBatchNumber;
 
-    // Chronological spacing: space batches chronologically 2 minutes apart up to now
+    // Fetch current sync watermark so new seeded batches are guaranteed to be newer than current watermark
+    const syncStateDoc = await SyncState.findOne({ key: 'global_sync' }).lean();
+    const currentWatermark = syncStateDoc && syncStateDoc.lastSyncedClosedAt ? new Date(syncStateDoc.lastSyncedClosedAt).getTime() : 0;
+
     const now = Date.now();
-    const intervalMs = 2 * 60 * 1000; // 2 minutes between each batch
-    const baseStartTime = now - (totalBoxesToCreate * intervalMs);
+    const intervalMs = 2000; // 2 seconds between each batch
+    const baseStartTime = Math.max(now, currentWatermark + 1000);
 
     let globalBoxIndex = 0;
     const summaryData = [];
@@ -224,12 +217,15 @@ async function seedBatches() {
             const dd = String(boxClosedTime.getDate()).padStart(2, '0');
             const batchDate = `${yyyy}.${mm}.${dd}`;
 
-            const serialNumbers = [];
-            for (let s = 1; s <= batchSize; s++) {
-                serialNumbers.push(`SN-${model.modelId}-${batchNum}-${String(s).padStart(3, '0')}`);
-            }
+            const serialNumbers = generateRealSerials(1000 + (globalBoxIndex * batchSize), batchSize);
 
-            const batchQrData = `*DEFAULT|${model.modelId}|${batchNum}*`;
+            const revNo = (model.productRevNo || 'Level 4').toUpperCase();
+            const swRev = (model.softwareRevNo || 'SW2').toUpperCase();
+            const supplier = model.supplierCode || '10156230';
+            const intPart = model.internalPartId || model.modelId;
+            const custPart = model.customerPartNo || 'N/A';
+
+            const batchQrData = `*${supplier}|${intPart}|${custPart}|${revNo}|${swRev}|${batchDate}|1A(${batchNum})|${serialNumbers.join(', ')}*`;
             const boxDocId = new mongoose.Types.ObjectId();
             const upstreamBatchId = new mongoose.Types.ObjectId();
 
@@ -283,15 +279,26 @@ async function seedBatches() {
             modelPartsCount += batchSize;
         }
 
-        // Insert into collections
+        // Insert ONLY into upstream production batches collection by default
         if (upstreamBatches.length > 0) {
             await db.collection('batches').insertMany(upstreamBatches);
         }
-        if (dispatchBoxes.length > 0) {
-            await DispatchBox.insertMany(dispatchBoxes);
-        }
-        if (lifecycleEvents.length > 0) {
-            await BoxLifecycleEvent.insertMany(lifecycleEvents);
+
+        // If explicitly requested via --direct, also bypass sync and populate dispatch_boxes
+        if (isDirect) {
+            if (dispatchBoxes.length > 0) await DispatchBox.insertMany(dispatchBoxes);
+            if (lifecycleEvents.length > 0) await BoxLifecycleEvent.insertMany(lifecycleEvents);
+            await SyncState.updateOne(
+                { key: 'global_sync' },
+                {
+                    $set: {
+                        lastSyncedClosedAt: latestClosedAt,
+                        lastBatchNumber: currentBatchNumber - 1,
+                        isInitialized: true
+                    }
+                },
+                { upsert: true }
+            );
         }
 
         summaryData.push({
@@ -304,20 +311,7 @@ async function seedBatches() {
         });
     }
 
-    // Advance sync watermark so sync service stays in harmony
-    await SyncState.updateOne(
-        { key: 'global_sync' },
-        {
-            $set: {
-                lastSyncedClosedAt: latestClosedAt,
-                lastBatchNumber: currentBatchNumber - 1,
-                isInitialized: true
-            }
-        },
-        { upsert: true }
-    );
-
-    // Fetch new total available stock counts for verification
+    // Fetch total available stock counts for verification
     const stockAgg = await DispatchBox.aggregate([
         { $match: { status: 'available' } },
         {
@@ -332,21 +326,21 @@ async function seedBatches() {
     stockAgg.forEach(s => { stockMap[s._id] = s; });
 
     console.log(`${C.bright}${C.green}════════════════════════════════════════════════════════════════════════════════${C.reset}`);
-    console.log(`${C.bright}${C.green}✔ SUCCESS: Successfully seeded ${totalBoxesToCreate} fresh available boxes!${C.reset}`);
+    console.log(`${C.bright}${C.green}✔ SUCCESS: Successfully created ${totalBoxesToCreate} production batches!${C.reset}`);
     console.log(`${C.bright}${C.green}════════════════════════════════════════════════════════════════════════════════${C.reset}\n`);
 
     console.table(summaryData.map(s => ({
         'Model ID': s.modelId,
         'Model Description': s.modelName,
         'Batch Size': `${s.batchSize} pcs`,
-        'Boxes Seeded': `+${s.boxesAdded}`,
-        'Parts Seeded': `+${s.partsAdded}`,
+        'Upstream Batches Created': `+${s.boxesAdded}`,
+        'Parts Created': `+${s.partsAdded}`,
         'Batch Range': s.batchRange,
-        'Total Available Stock': `${stockMap[s.modelId]?.availableBoxes || 0} boxes (${stockMap[s.modelId]?.availableParts || 0} parts)`
+        'Current Ingested Stock': `${stockMap[s.modelId]?.availableBoxes || 0} boxes (${stockMap[s.modelId]?.availableParts || 0} parts)`
     })));
 
     console.log(`\n${C.cyan}ℹ Global Batch Range:${C.reset} #${startBatchNumber} to #${currentBatchNumber - 1}`);
-    console.log(`${C.cyan}ℹ Stock Status:${C.reset} All boxes marked ${C.green}AVAILABLE${C.reset} for immediate FIFO dispatch sessions.`);
+    console.log(`${C.cyan}ℹ Ingestion Status:${C.reset} Created in ${C.green}batches${C.reset} collection. Ready for background application ingestion.`);
     console.log(`${C.dim}Done.${C.reset}\n`);
 
     await mongoose.disconnect();

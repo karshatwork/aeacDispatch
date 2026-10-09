@@ -10,7 +10,7 @@ let syncTimer = null;
 async function getOrCreateSyncState() {
     let state = await SyncState.findOne({ key: 'global_sync' });
     if (!state) {
-        // Initialize watermark to CURRENT DATE/TIME on first load
+        // Initialize watermark to CURRENT DATE/TIME on first load so historical batches are ignored
         const now = new Date();
         state = await SyncState.create({
             key: 'global_sync',
@@ -19,7 +19,7 @@ async function getOrCreateSyncState() {
             totalSyncedBoxes: 0,
             isInitialized: true
         });
-        console.log(`[SYNC INIT] Initialized sync watermark to current time: ${now.toISOString()}`);
+        console.log(`[SYNC INIT] Initialized sync watermark to installation time: ${now.toISOString()}`);
     }
     return state;
 }

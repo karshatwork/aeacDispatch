@@ -139,7 +139,7 @@
      STATE
      ====================================================================== */
   const ABORT = { aborted: true };
-  const noop = function () {};
+  const noop = function () { };
   const S = {
     mounted: false, init: false, epoch: 0, speed: 1, ro: null,
     dom: {},
@@ -209,6 +209,24 @@
     });
   }
   const wait = ms => new Promise(r => setTimeout(r, ms));          // real-time, not epoch bound
+  /* Set  window.DISPATCH_ANIM_DEBUG = true  in the console to see WHY the scene snaps or animates. */
+  function dbg() {
+    if (typeof window !== 'undefined' && window.DISPATCH_ANIM_DEBUG) console.log.apply(console, ['[dispatchAnimation]'].concat([].slice.call(arguments)));
+  }
+  function getBoxIdString(b) {
+    if (b == null) return '';
+    if (typeof b === 'string' || typeof b === 'number') return String(b);
+    if (typeof b === 'object') {
+      if (b.boxId != null) return getBoxIdString(b.boxId);
+      if (b._id != null) return getBoxIdString(b._id);
+      if (b.id != null) return getBoxIdString(b.id);
+      if (b.$oid) return String(b.$oid);
+      const str = typeof b.toString === 'function' ? b.toString() : '';
+      if (str && str !== '[object Object]') return str;
+    }
+    return String(b);
+  }
+  function boxLabel(b) { return String(b.label || b.shiftBatchCode || b.batchNumber || ''); }
   function isIdle() { return !S.jobs.length && !S.workerBusy && !S.convCount && !S.forkBusy; }
 
   /* 2-bone inverse kinematics. returns elbow/knee + (clamped) end point */
@@ -277,7 +295,7 @@
     });
     s += `</g>`;
     // wall sign
-    s += `<g transform="translate(530,80)"><rect width="190" height="26" rx="4" fill="#0b1220" stroke="#2f4270"/><text x="95" y="18" text-anchor="middle" font-size="13" font-weight="800" letter-spacing="3" fill="#fbbf24" font-family="monospace">DISPATCH BAY</text></g>`;
+    s += `<g transform="translate(530,50)"><rect width="190" height="26" rx="4" fill="#0b1220" stroke="#2f4270"/><text x="95" y="18" text-anchor="middle" font-size="13" font-weight="800" letter-spacing="3" fill="#fbbf24" font-family="monospace">DISPATCH BAY 03</text></g>`;
     // dock opening w/ dusk sky
     s += `<rect x="752" y="68" width="528" height="${Y0 - 68}" fill="url(#dsb-g-sky)"/>`;
     s += `<circle cx="1120" cy="132" r="30" fill="#fde9b8" opacity=".12"/><circle cx="1120" cy="132" r="17" fill="#fde9b8" opacity=".92"/>`;
@@ -504,6 +522,7 @@
     const target = typeof container === 'string' ? document.getElementById(container) : container;
     if (!target) return;
     if (!target.querySelector('.dsb-root')) {
+      dbg('mount(): injecting fresh scene');
       S.epoch++;
       target.innerHTML = template();
       cacheDom(target.querySelector('.dsb-root'));
@@ -850,7 +869,7 @@
     S.forkBusy = true;
     const E = S.epoch;
     try {
-      for (;;) {
+      for (; ;) {
         await waitUntil(() => { const h = S.convQueue[0]; return !h || h.settled; });
         const head = S.convQueue[0];
         if (!head) break;
@@ -906,9 +925,9 @@
 
   function syncStatic(alloc, scannedIds) {
     clearDynamic();
-    S.alloc = alloc.map(b => ({ id: String(b.boxId), batch: b.batchNumber, qty: b.completedCount }));
+    S.alloc = alloc.map(b => ({ id: getBoxIdString(b), batch: boxLabel(b), qty: b.completedCount }));
     S.allocMap = new Map(S.alloc.map(a => [a.id, a]));
-    S.allocKey = alloc.map(b => b.boxId).join('|');
+    S.allocKey = alloc.map(b => getBoxIdString(b)).join('|');
     S.layout = computeLayout(S.alloc.length);
     const loaded = [];
     scannedIds.forEach(id => { if (S.allocMap.has(id) && loaded.indexOf(id) < 0) loaded.push(id); });
@@ -930,24 +949,34 @@
     if (S.departing) { S.pendingRender = options; return; }
 
     const alloc = options.allocatedBoxes || [], scanned = options.scannedBoxes || [];
-    const ids = scanned.map(s => String(s && s.boxId != null ? s.boxId : s));
-    const allocSet = new Set(alloc.map(b => String(b.boxId)));
+    const ids = scanned.map(s => getBoxIdString(s));
+    const allocSet = new Set(alloc.map(b => getBoxIdString(b)));
     const valid = [], vset = new Set();
     ids.forEach(id => { if (allocSet.has(id) && !vset.has(id)) { vset.add(id); valid.push(id); } });
     S.wantComplete = !!options.isComplete || (alloc.length > 0 && valid.length === alloc.length);
 
-    const key = alloc.map(b => b.boxId).join('|');
+    const key = alloc.map(b => getBoxIdString(b)).join('|');
     let regress = false;
     S.scannedModel.forEach(id => { if (!vset.has(id)) regress = true; });
 
-    if (!S.init || key !== S.allocKey || regress || (typeof document !== 'undefined' && document.hidden)) {
+    // NOTE: a hidden/minimised window must NOT snap. requestAnimationFrame simply pauses while hidden,
+    // the queued jobs stay in order and play (sped up) as soon as the window is visible again.
+    const reason = !S.init ? 'first render / after reset' : key !== S.allocKey ? 'allocatedBoxes changed' : regress ? 'a scanned box disappeared from scannedBoxes' : '';
+    if (reason) {
+      dbg('SNAP (instant rebuild) because:', reason, '| alloc', alloc.length, '| scanned', valid.length);
       syncStatic(alloc, valid);
       S.init = true;
       return;
     }
     valid.forEach(id => {
-      if (!S.scannedModel.has(id)) { S.scannedModel.add(id); enqueue(S.allocMap.get(id)); }
+      if (!S.scannedModel.has(id)) {
+        S.scannedModel.add(id);
+        const item = S.allocMap.get(id);
+        dbg('ANIMATE box', id, item ? '' : '(not in allocMap!)', '| queue now', S.jobs.length + 1);
+        if (item) enqueue(item);
+      }
     });
+    if (!valid.length || vset.size === S.scannedModel.size) { /* nothing new */ }
     updateHUD(); evalWrap();
   }
 
@@ -1002,6 +1031,7 @@
   }
 
   function reset() {
+    dbg('reset() called');
     if (!S.mounted || !S.dom.stage) return;
     if (S.departing) { S.pendingReset = true; S.pendingRender = null; return; }
     doReset();

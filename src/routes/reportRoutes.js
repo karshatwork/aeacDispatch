@@ -1,12 +1,36 @@
 // src/routes/reportRoutes.js
 const express = require('express');
 const router = express.Router();
-const { DispatchTransaction, DispatchBox, DispatchUser } = require('../models');
+const { DispatchTransaction, DispatchBox, DispatchUser, ProductModel } = require('../models');
 const { authenticate, requireRole } = require('../middleware/authMiddleware');
 
 // GET /api/reports/monthly - Summary metrics & chart data (supports optional dateFrom/dateTo/modelId filters)
 router.get('/monthly', authenticate, requireRole('supervisor'), async (req, res) => {
     try {
+        const { getStatus } = require('../config/db');
+        if (!getStatus().isConnected) {
+            const now = new Date();
+            const rangeLabel = now.toLocaleString('default', { month: 'long', year: 'numeric' });
+            return res.json({
+                success: true,
+                metrics: {
+                    dispatchedThisMonthBoxes: 0,
+                    dispatchedThisMonthParts: 0,
+                    activeHoldBoxes: 0,
+                    rejectedThisMonthBoxes: 0,
+                    dispatchedThisMonthTxs: 0,
+                    cancelledThisMonthTxs: 0,
+                    staleThisMonthTxs: 0,
+                    monthName: rangeLabel
+                },
+                charts: {
+                    daily: { labels: [], dataBoxes: [], dataParts: [], isMonthly: false, granularity: 'daily' },
+                    models: { labels: [], dataBoxes: [], dataParts: [] }
+                },
+                offline: true
+            });
+        }
+
         const { dateFrom, dateTo, modelId } = req.query;
         const now = new Date();
 
@@ -31,7 +55,13 @@ router.get('/monthly', authenticate, requireRole('supervisor'), async (req, res)
         };
         if (modelId && modelId !== 'ALL') txFilter.modelId = modelId;
 
-        const filteredTxs = await DispatchTransaction.find(txFilter);
+        const [filteredTxs, productModels] = await Promise.all([
+            DispatchTransaction.find(txFilter),
+            ProductModel.find({}).lean()
+        ]);
+
+        const modelNameMap = {};
+        (productModels || []).forEach(m => { modelNameMap[m.modelId] = m.modelName; });
 
         let dispatchedBoxes = 0;
         let dispatchedParts = 0;
@@ -46,8 +76,10 @@ router.get('/monthly', authenticate, requireRole('supervisor'), async (req, res)
             const dayKey = tx.completedAt.toISOString().slice(0, 10);
             dailyBoxMap[dayKey] = (dailyBoxMap[dayKey] || 0) + tx.allocatedBoxes.length;
             dailyPartsMap[dayKey] = (dailyPartsMap[dayKey] || 0) + tx.dispatchedPartCount;
-            modelBoxMap[tx.modelId] = (modelBoxMap[tx.modelId] || 0) + tx.allocatedBoxes.length;
-            modelPartsMap[tx.modelId] = (modelPartsMap[tx.modelId] || 0) + tx.dispatchedPartCount;
+
+            const mLabel = tx.modelName || modelNameMap[tx.modelId] || tx.modelId;
+            modelBoxMap[mLabel] = (modelBoxMap[mLabel] || 0) + tx.allocatedBoxes.length;
+            modelPartsMap[mLabel] = (modelPartsMap[mLabel] || 0) + tx.dispatchedPartCount;
         }
 
         // Boxes rejected in range
@@ -148,6 +180,18 @@ router.get('/monthly', authenticate, requireRole('supervisor'), async (req, res)
 // GET /api/reports/history - Historical transactions (includes completed, cancelled, and stale/failed dispatches)
 router.get('/history', authenticate, requireRole('supervisor'), async (req, res) => {
     try {
+        const { getStatus } = require('../config/db');
+        if (!getStatus().isConnected) {
+            return res.json({
+                success: true,
+                transactions: [],
+                total: 0,
+                page: 1,
+                pages: 0,
+                offline: true
+            });
+        }
+
         const { dateFrom, dateTo, modelId, status = 'ALL', page = 1, limit = 20 } = req.query;
         const filter = {};
 
@@ -238,13 +282,13 @@ router.get('/export-csv', authenticate, requireRole('supervisor'), async (req, r
         const resolveFullName = (tx) => tx.operatorFullName || userMap[tx.operatorUsername] || tx.operatorUsername;
 
         const csvRows = [
-            'Dispatch ID,Date,Status,Model,Target Type,Target Quantity,Boxes Allocated,Boxes Scanned,Parts Dispatched,Operator,Cancellation / Stale Reason,Box Numbers,Notes'
+            'Dispatch ID,Date,Status,Model,Target Type,Target Quantity,Boxes Allocated,Boxes Scanned,Parts Dispatched,Operator,Cancellation / Stale Reason,Sticker Codes,Notes'
         ];
 
         for (const tx of transactions) {
             const dateObj = tx.completedAt || tx.cancelledAt || tx.startedAt || tx.createdAt;
             const dateStr = dateObj ? dateObj.toISOString().slice(0, 19).replace('T', ' ') : '';
-            const boxNumbers = (tx.allocatedBoxes || []).map(b => b.batchNumber).join(';');
+            const boxNumbers = (tx.allocatedBoxes || []).map(b => (b.shiftCode && b.batchNumber) ? `${b.shiftCode}(${b.batchNumber})` : (b.batchNumber ? `1A(${b.batchNumber})` : '')).join(';');
             const safeReason = (tx.cancellationReason || '').replace(/"/g, '""');
             const safeNotes = (tx.notes || '').replace(/"/g, '""');
             const statusUpper = (tx.status || 'unknown').toUpperCase();
