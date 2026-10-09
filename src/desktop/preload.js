@@ -18,5 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Open external link or mailto in default OS application
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   // Direct legal markdown file reader
-  readLegalDocument: (docType) => ipcRenderer.invoke('read-legal-document', docType)
+  readLegalDocument: (docType) => ipcRenderer.invoke('read-legal-document', docType),
+  // Native OS Save File dialog for CSV and other exports
+  saveFileDialog: (options) => ipcRenderer.invoke('save-file-dialog', options)
 });

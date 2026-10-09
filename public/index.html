@@ -325,16 +325,17 @@
                 </div>
 
                 <div class="form-group" style="margin-bottom: 0;">
-                  <label id="dispatch-qty-label" class="form-label">REQUIRED BOXES COUNT</label>
+                  <label id="dispatch-qty-label" class="form-label">REQUIRED PARTS COUNT (60/box)</label>
                   <div style="display: flex; gap: 8px; align-items: center;">
                     <div class="segmented-toggle">
-                      <button type="button" id="btn-mode-boxes" class="toggle-segment active"
+                      <button type="button" id="btn-mode-boxes" class="toggle-segment"
                         onclick="setQuantityMode('boxes')">BOXES</button>
-                      <button type="button" id="btn-mode-parts" class="toggle-segment"
+                      <button type="button" id="btn-mode-parts" class="toggle-segment active"
                         onclick="setQuantityMode('parts')">PARTS</button>
                     </div>
-                    <input type="number" id="dispatch-target-qty" class="form-control" value="2" min="1"
+                    <input type="number" id="dispatch-target-qty" class="form-control" value="60" min="1"
                       oninput="validateDispatchQuantity()"
+                      onkeydown="if(event.key==='Enter') handleStartDispatch()"
                       style="width: 90px; text-align: center; font-weight: 700; font-family: var(--font-mono);">
                   </div>
                   <div id="dispatch-qty-hint" style="display: none; font-size: 11px; font-family: var(--font-mono); margin-top: 4px; line-height: 1.2;"></div>
@@ -348,14 +349,14 @@
             </div>
           </div>
 
-          <!-- ACTIVE TRANSACTION PANORAMIC COCKPIT (WHEN DISPATCH ACTIVE) -->
+          <!-- ACTIVE TRANSACTION PANORAMIC WINDOW (WHEN DISPATCH ACTIVE) -->
           <div id="dispatch-active-card" style="display: none;">
             
             <!-- 1. OVERHEAD SCADA TELEMETRY & FIFO GUIDANCE PANEL -->
             <div class="scada-panel" style="margin-bottom: 12px;">
               <div class="scada-panel-header" style="flex-wrap: wrap; gap: 8px; padding: 7px 16px; min-height: 38px;">
                 <div style="display: flex; align-items: center; gap: 8px;">
-                  <span><i class="ri-radar-line"></i> ACTIVE DISPATCH COCKPIT</span>
+                  <span><i class="ri-radar-line"></i> ACTIVE DISPATCH WINDOW</span>
                   <span id="active-tx-status-badge" class="badge badge-available">IN PROGRESS</span>
                 </div>
                 <div class="telemetry-meta-specs-bar">
@@ -424,10 +425,7 @@
               </div>
             </div>
 
-            <!-- 2. CENTER HERO: WAREHOUSE STAGING BAY ANIMATION COMPONENT -->
-            <div id="dispatch-animation-container"></div>
-
-            <!-- 3. INTERACTIVE ALLOCATED BOXES LEDGER (BOTTOM TABLE) -->
+            <!-- 2. INTERACTIVE ALLOCATED BOXES (COMPACT OPERATOR BLOBS) -->
             <div class="scada-panel" style="margin-bottom: 0;">
               <div class="scada-panel-header">
                 <span><i class="ri-list-check-2"></i> ALLOCATED BOXES (SCAN IN ANY ORDER)</span>
@@ -436,23 +434,11 @@
                 </button>
               </div>
               <div class="scada-panel-body" style="padding-bottom: 16px;">
-                <table class="scada-table" style="margin-bottom: 16px;">
-                  <thead>
-                    <tr>
-                      <th>RANK</th>
-                      <th>BATCH / SHIFT CODE</th>
-                      <th>CUSTOMER PART NO</th>
-                      <th>PRODUCED AT</th>
-                      <th>PARTS</th>
-                      <th>STATUS</th>
-                    </tr>
-                  </thead>
-                  <tbody id="fifo-pick-tbody">
-                    <tr>
-                      <td colspan="5" style="text-align: center; color: #64748b;">No active dispatch session.</td>
-                    </tr>
-                  </tbody>
-                </table>
+                <div id="allocated-boxes-blobs" class="allocated-boxes-grid">
+                  <div style="grid-column: 1 / -1; text-align: center; color: #64748b; padding: 16px 0; font-size: 12px;">
+                    No active dispatch session.
+                  </div>
+                </div>
 
                 <!-- Bottom Consolidated Action Deck -->
                 <div class="dispatch-actions-deck">
@@ -467,6 +453,9 @@
                 </div>
               </div>
             </div>
+
+            <!-- 3. WAREHOUSE STAGING BAY ANIMATION COMPONENT (OUT OF THE WAY BELOW ALLOCATIONS) -->
+            <div id="dispatch-animation-container" style="margin-top: 14px;"></div>
 
           </div>
 

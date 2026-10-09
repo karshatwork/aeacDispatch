@@ -285,7 +285,7 @@ async function printHeader() {
     console.clear();
     console.log(`${C.cyan}╔════════════════════════════════════════════════════════════════════════════╗${C.reset}`);
     console.log(`${C.cyan}║${C.reset}  ${C.bright}RECORDKEEPER INDUSTRIAL SCANNER SIMULATOR${C.reset}                                ${C.cyan}║${C.reset}`);
-    console.log(`${C.cyan}║${C.reset}  ${C.dim}Direct real-time scan injection into Dispatch Cockpit & Optical Gate${C.reset}      ${C.cyan}║${C.reset}`);
+    console.log(`${C.cyan}║${C.reset}  ${C.dim}Direct real-time scan injection into Dispatch Window & Optical Gate${C.reset}      ${C.cyan}║${C.reset}`);
     console.log(`${C.cyan}╚════════════════════════════════════════════════════════════════════════════╝${C.reset}`);
 
     console.log(`\n${C.bright}TRANSMISSION CHANNEL:${C.reset}`);

@@ -50,8 +50,21 @@ const api = {
     sessionStorage.removeItem('dsp_user');
   },
 
-  async request(endpoint, options = {}) {
-    const headers = options.headers || {};
+  getBaseUrl() {
+    return (window.location.protocol === 'file:' || window.location.protocol === 'app:')
+      ? _API_HOST
+      : '';
+  },
+
+  getUrl(endpoint) {
+    if (!endpoint) return this.getBaseUrl();
+    if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) return endpoint;
+    const base = this.getBaseUrl();
+    return `${base}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+  },
+
+  async getAuthHeaders(customHeaders = {}) {
+    const headers = { ...customHeaders };
     if (this.token) {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
@@ -59,8 +72,6 @@ const api = {
     if (appToken) {
       headers['X-App-Token'] = appToken;
     }
-    headers['Content-Type'] = 'application/json';
-
     if (!_cachedDesktopSecret && window.electronAPI && typeof window.electronAPI.getDesktopSecret === 'function') {
       try {
         _cachedDesktopSecret = await window.electronAPI.getDesktopSecret();
@@ -69,11 +80,18 @@ const api = {
     if (_cachedDesktopSecret) {
       headers['X-Desktop-Secret'] = _cachedDesktopSecret;
     }
+    return headers;
+  },
 
-    const apiBase = (window.location.protocol === 'file:' || window.location.protocol === 'app:')
-      ? _API_HOST
-      : '';
-    const targetUrl = endpoint.startsWith('http') ? endpoint : `${apiBase}${endpoint}`;
+  async request(endpoint, options = {}) {
+    const authHeaders = await this.getAuthHeaders();
+    const headers = {
+      'Content-Type': 'application/json',
+      ...authHeaders,
+      ...(options.headers || {})
+    };
+
+    const targetUrl = this.getUrl(endpoint);
 
     try {
       const res = await fetch(targetUrl, {
@@ -97,6 +115,39 @@ const api = {
     } catch (err) {
       throw err;
     }
+  },
+
+  async downloadCsv(endpoint, defaultFilename) {
+    const targetUrl = this.getUrl(endpoint);
+    const headers = await this.getAuthHeaders();
+    const res = await fetch(targetUrl, { headers });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+    const csvText = await res.text();
+
+    if (window.electronAPI && typeof window.electronAPI.saveFileDialog === 'function') {
+      const saveRes = await window.electronAPI.saveFileDialog({
+        defaultFilename,
+        content: csvText,
+        filters: [{ name: 'CSV (Comma delimited) (*.csv)', extensions: ['csv'] }]
+      });
+      return saveRes;
+    }
+
+    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = defaultFilename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      a.remove();
+      window.URL.revokeObjectURL(downloadUrl);
+    }, 1500);
+    return { success: true };
   },
 
   // Auth endpoints

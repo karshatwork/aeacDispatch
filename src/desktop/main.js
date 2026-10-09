@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, net, ipcMain, shell, Menu, session } = require('electron');
+const { app, BrowserWindow, protocol, net, ipcMain, shell, Menu, session, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -422,6 +422,29 @@ ipcMain.handle('print-to-pdf', async (_event, { html, filename }) => {
   } catch (err) {
     pdfWin.destroy();
     try { fs.unlinkSync(htmlPath); } catch (_) {}
+    throw err;
+  }
+});
+
+/**
+ * save-file-dialog: prompts native OS Save dialog and writes text content to disk
+ */
+ipcMain.handle('save-file-dialog', async (_event, { defaultFilename, content, filters }) => {
+  try {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    const defaultPath = path.join(app.getPath('downloads'), defaultFilename || 'export.csv');
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath,
+      filters: filters || [{ name: 'CSV Files (*.csv)', extensions: ['csv'] }]
+    });
+
+    if (!result.canceled && result.filePath) {
+      fs.writeFileSync(result.filePath, content, 'utf8');
+      return { success: true, filePath: result.filePath };
+    }
+    return { canceled: true };
+  } catch (err) {
+    console.error('[ELECTRON] save-file-dialog error:', err.message);
     throw err;
   }
 });

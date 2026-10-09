@@ -5,9 +5,10 @@ let ws = null;
 let dailyChart = null;
 let modelChart = null;
 let systemAlarmCallback = null;
-let currentQuantityMode = 'boxes';
+let currentQuantityMode = 'parts';
 
 function setQuantityMode(mode) {
+  const previousMode = currentQuantityMode;
   currentQuantityMode = mode;
   const btnBoxes = document.getElementById('btn-mode-boxes');
   const btnParts = document.getElementById('btn-mode-parts');
@@ -15,18 +16,38 @@ function setQuantityMode(mode) {
   const input = document.getElementById('dispatch-target-qty');
   const select = document.getElementById('dispatch-model-select');
   const selectedOpt = select ? select.options[select.selectedIndex] : null;
-  const batchSize = selectedOpt ? (parseInt(selectedOpt.dataset.batchSize, 10) || 20) : 20;
+  const batchSize = selectedOpt ? (parseInt(selectedOpt.dataset.batchSize, 10) || 60) : 60;
+
+  const currentVal = input ? (parseInt(input.value, 10) || 0) : 0;
 
   if (mode === 'boxes') {
     if (btnBoxes) btnBoxes.className = 'toggle-segment active';
     if (btnParts) btnParts.className = 'toggle-segment';
     if (label) label.textContent = 'REQUIRED BOXES COUNT';
-    if (input && parseInt(input.value, 10) > 15) input.value = 2;
+
+    // Auto-convert from parts to boxes: divide by box capacity
+    if (previousMode === 'parts' && input) {
+      const boxesCount = currentVal > 0 ? Math.max(1, Math.round(currentVal / batchSize)) : 1;
+      input.value = boxesCount;
+    } else if (input && (!input.value || parseInt(input.value, 10) <= 0)) {
+      input.value = 1;
+    }
   } else {
     if (btnBoxes) btnBoxes.className = 'toggle-segment';
     if (btnParts) btnParts.className = 'toggle-segment active';
     if (label) label.textContent = `REQUIRED PARTS COUNT (${batchSize}/box)`;
-    if (input && parseInt(input.value, 10) <= 10) input.value = batchSize * 2;
+
+    // Auto-convert from boxes to parts: multiply by box capacity
+    if (previousMode === 'boxes' && input) {
+      const partsCount = currentVal > 0 ? currentVal * batchSize : batchSize;
+      input.value = partsCount;
+    } else if (input && (!input.value || parseInt(input.value, 10) <= 0)) {
+      input.value = batchSize;
+    }
+  }
+  if (input) {
+    input.focus();
+    input.select();
   }
   validateDispatchQuantity();
 }
@@ -91,13 +112,19 @@ function getBoxStickerInfo(box) {
       if (parts[0]) supplierCode = parts[0];
       if (parts[1]) internalPartId = parts[1];
       if (parts[2]) customerPartNo = parts[2];
-      if (parts[5] && parts[5].includes('.')) {
-        batchDate = parts[5];
+      if (parts[5] && (parts[5].includes('.') || parts[5].includes('-') || parts[5].includes('/'))) {
+        batchDate = parts[5].trim();
       }
       if (parts[6]) {
-        shiftBatchCode = parts[6];
+        shiftBatchCode = parts[6].trim();
       }
     }
+  }
+
+  // Fallback for batchDate if not parsed from QR (date only, no time)
+  if (batchDate === '--') {
+    if (box.batchDate) batchDate = box.batchDate;
+    else if (box.closedAt) batchDate = new Date(box.closedAt).toISOString().slice(0, 10);
   }
 
   // Fallback: If customerPartNo is '--' and activeTx is present, use activeTx.customerPartNo
@@ -867,6 +894,13 @@ document.addEventListener('click', (e) => {
 async function loadDispatchView() {
   await loadModelSelector();
   await checkActiveDispatch();
+  const input = document.getElementById('dispatch-target-qty');
+  if (input && !activeTx) {
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 150);
+  }
 }
 
 async function loadModelSelector(preserveSelected = true) {
@@ -931,9 +965,15 @@ function updateAvailableStockDisplay() {
 
   const boxes = selectedOpt.dataset.availableBoxes || 0;
   const parts = selectedOpt.dataset.availableParts || 0;
+  const batchSize = parseInt(selectedOpt.dataset.batchSize, 10) || 60;
 
   if (boxEl) boxEl.textContent = `${boxes} BOXES`;
   if (partEl) partEl.textContent = `${parts} AVAILABLE PARTS`;
+
+  const label = document.getElementById('dispatch-qty-label');
+  if (currentQuantityMode === 'parts' && label) {
+    label.textContent = `REQUIRED PARTS COUNT (${batchSize}/box)`;
+  }
   validateDispatchQuantity();
 }
 
@@ -1003,46 +1043,41 @@ function renderActiveDispatchUI() {
   document.getElementById('dispatch-setup-card').style.display = 'none';
   document.getElementById('dispatch-active-card').style.display = 'block';
 
+  const scannedBoxIds = (activeTx.scannedBoxes || []).map(s => s.boxId.toString());
+
   document.getElementById('active-tx-id').textContent = activeTx.dispatchId;
   document.getElementById('active-tx-target').textContent = `${activeTx.targetQuantity} ${activeTx.targetType.toUpperCase()}`;
   document.getElementById('active-tx-model').textContent = activeTx.modelName || activeTx.modelId;
   document.getElementById('active-tx-operator').textContent = activeTx.operatorFullName || activeTx.operatorUsername;
 
-  // Render Pick Table (6 Columns: RANK, BATCH / SHIFT CODE, CUSTOMER PART NO, PRODUCED AT, PARTS, STATUS)
-  const tbody = document.getElementById('fifo-pick-tbody');
-  tbody.innerHTML = '';
+  // Render Allocated Box Blobs (RANK, SHIFT CODE, DATE, SCAN STATUS)
+  const container = document.getElementById('allocated-boxes-blobs') || document.getElementById('fifo-pick-tbody');
+  if (container) {
+    container.innerHTML = '';
 
-  const scannedBoxIds = (activeTx.scannedBoxes || []).map(s => s.boxId.toString());
+    activeTx.allocatedBoxes.forEach((box, index) => {
+      const isScanned = scannedBoxIds.includes(box.boxId.toString());
+      const sticker = getBoxStickerInfo(box);
+      const cleanDate = sticker.batchDate !== '--'
+        ? sticker.batchDate
+        : (box.batchDate || (box.closedAt ? new Date(box.closedAt).toISOString().slice(0, 10) : '--'));
 
-  activeTx.allocatedBoxes.forEach((box, index) => {
-    const isScanned = scannedBoxIds.includes(box.boxId.toString());
-    const tr = document.createElement('tr');
-    tr.setAttribute('data-box-id', box.boxId);
-    if (isScanned) tr.style.background = 'rgba(5, 150, 105, 0.15)';
-
-    const sticker = getBoxStickerInfo(box);
-    const producedTime = box.closedAt ? new Date(box.closedAt).toISOString().slice(0, 16).replace('T', ' ') : (sticker.batchDate || '--');
-
-    tr.innerHTML = `
-      <td><strong>#${index + 1}</strong></td>
-      <td>
-        <strong style="color: #0f172a; font-size: 13.5px; font-family: var(--font-mono);">${sticker.shiftBatchCode}</strong>
-        <div style="font-size: 10.5px; color: #64748b; font-weight: 600; font-family: var(--font-mono); margin-top: 2px;">
-          <i class="ri-calendar-line" style="color: #0284c7;"></i> ${sticker.batchDate}
+      const card = document.createElement('div');
+      card.className = `box-blob-card ${isScanned ? 'scanned' : 'pending'}`;
+      card.setAttribute('data-box-id', box.boxId);
+      card.innerHTML = `
+        <div class="box-blob-header">
+          <span class="box-blob-rank">RANK #${index + 1}</span>
+          ${isScanned ? '<span class="box-blob-status status-scanned"><i class="ri-check-line"></i> SCANNED</span>' : ''}
         </div>
-      </td>
-      <td>
-        <strong style="color: #0284c7; font-size: 12px; font-family: var(--font-mono);">${sticker.customerPartNo}</strong>
-      </td>
-      <td style="font-family: var(--font-mono); font-size: 11px;">${producedTime}</td>
-      <td><strong>${box.completedCount} PCS</strong></td>
-      <td>
-        ${isScanned ? '<span class="badge badge-verified"><i class="ri-check-line"></i> VERIFIED</span>' : '<span class="badge badge-pending"><i class="ri-barcode-box-line"></i> PENDING SCAN</span>'}
-      </td>
-    `;
-
-    tbody.appendChild(tr);
-  });
+        <div class="box-blob-content">
+          <span class="box-blob-code">${sticker.shiftBatchCode || ('Box #' + (box.batchNumber || index + 1))}</span>
+          <span class="box-blob-date">${cleanDate}</span>
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  }
 
   // Update progress bar
   const scannedCount = activeTx.scannedBoxes ? activeTx.scannedBoxes.length : 0;
@@ -1131,9 +1166,9 @@ async function renderIdleDispatchUI() {
 
   const progressFill = document.getElementById('dispatch-progress-fill');
   if (progressFill) progressFill.style.width = '0%';
-  const pickTbody = document.getElementById('fifo-pick-tbody');
-  if (pickTbody) {
-    pickTbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #64748b;">No active dispatch session. Select a model and start a session above.</td></tr>';
+  const blobsContainer = document.getElementById('allocated-boxes-blobs') || document.getElementById('fifo-pick-tbody');
+  if (blobsContainer) {
+    blobsContainer.innerHTML = '<div style="grid-column: 1 / -1; text-align: center; color: #64748b; padding: 16px 0; font-size: 12px;">No active dispatch session. Select a model and start a session above.</div>';
   }
   const progText = document.getElementById('dispatch-progress-text');
   if (progText) progText.textContent = 'NO ACTIVE DISPATCH';
@@ -1147,6 +1182,21 @@ async function renderIdleDispatchUI() {
 
   // Reload available models and live stock count for the initiate new dispatch session card
   await loadModelSelector(true);
+
+  const targetQtyInput = document.getElementById('dispatch-target-qty');
+  const select = document.getElementById('dispatch-model-select');
+  const selectedOpt = select ? select.options[select.selectedIndex] : null;
+  const batchSize = selectedOpt ? (parseInt(selectedOpt.dataset.batchSize, 10) || 60) : 60;
+
+  if (targetQtyInput) {
+    if (!targetQtyInput.value || parseInt(targetQtyInput.value, 10) <= 0) {
+      targetQtyInput.value = (currentQuantityMode === 'parts') ? batchSize : 1;
+    }
+    setTimeout(() => {
+      targetQtyInput.focus();
+      targetQtyInput.select();
+    }, 150);
+  }
 }
 
 async function processBoxScan(scannedPayload) {
@@ -1677,15 +1727,25 @@ function resetModalScanState(modalType, batchNumber) {
 
 function handleModalScanVerification(qrData) {
   const scanned = (qrData || '').trim();
-  const targetBatchStr = String(activeModalBatchNumber);
+  const targetBatchStr = String(activeModalBatchNumber || '').trim();
   const targetQr = (activeModalQrData || '').trim();
 
-  // Match: exact QR payload, exact batch number string, or embedded delimiter
+  // Also extract pure numeric or core code inside parentheses, e.g. "1A(17)" -> "17"
+  const parenMatch = targetBatchStr.match(/\(([^)]+)\)/);
+  const pureNum = parenMatch ? parenMatch[1].trim() : targetBatchStr;
+
+  // Match: exact QR payload, exact sticker string, extracted batch number, or embedded delimiters
   const isMatch = (targetQr && scanned === targetQr) ||
     scanned === targetBatchStr ||
+    (pureNum && scanned === pureNum) ||
     scanned.includes(`|${targetBatchStr}*`) ||
     scanned.includes(`|${targetBatchStr}|`) ||
-    scanned.endsWith(`|${targetBatchStr}`);
+    scanned.endsWith(`|${targetBatchStr}`) ||
+    (pureNum && (
+      scanned.includes(`|${pureNum}*`) ||
+      scanned.includes(`|${pureNum}|`) ||
+      scanned.endsWith(`|${pureNum}`)
+    ));
 
   const modalType = activeModalType;
   const cardEl = document.getElementById(`modal-${modalType}-scan-card`);
@@ -1806,7 +1866,7 @@ function openHoldModal(boxId, stickerCodeRaw, modelNameRaw, qty, encodedQr = '')
     errEl.textContent = '';
   }
 
-  resetModalScanState('hold', batchNumber);
+  resetModalScanState('hold', stickerCode);
 
   // Populate reasons and force blank default selection
   populateModalReasonDropdowns();
@@ -1905,7 +1965,7 @@ function openReleaseModal(boxId, stickerCodeRaw, modelNameRaw, qty, encodedQr = 
     errEl.textContent = '';
   }
 
-  resetModalScanState('release', batchNumber);
+  resetModalScanState('release', stickerCode);
 
   const remarksInput = document.getElementById('modal-release-remarks');
   if (remarksInput) {
@@ -1988,7 +2048,7 @@ function openRejectModal(boxId, stickerCodeRaw, modelNameRaw, qty, encodedQr = '
     errEl.textContent = '';
   }
 
-  resetModalScanState('reject', batchNumber);
+  resetModalScanState('reject', stickerCode);
 
   // Populate reasons and force blank default selection
   populateModalReasonDropdowns();
@@ -2087,7 +2147,7 @@ function openReopenModal(boxId, stickerCodeRaw, modelNameRaw, qty, encodedQr = '
     errEl.textContent = '';
   }
 
-  resetModalScanState('reopen', batchNumber);
+  resetModalScanState('reopen', stickerCode);
 
   const remarksInput = document.getElementById('modal-reopen-remarks');
   if (remarksInput) {
@@ -2968,26 +3028,23 @@ async function exportInventoryCsv() {
     if (search) params.append('search', search);
 
     const qs = params.toString();
-    const url = `/api/boxes/export-csv${qs ? `?${qs}` : ''}`;
-    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${api.token}` } });
+    const endpoint = `/api/boxes/export-csv${qs ? `?${qs}` : ''}`;
+    const filename = `box_inventory_${new Date().toISOString().slice(0, 10)}.csv`;
 
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error || `HTTP ${res.status}`);
+    const result = await api.downloadCsv(endpoint, filename);
+    if (result && result.canceled) {
+      return;
     }
 
-    const blob = await res.blob();
-    const downloadUrl = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = downloadUrl;
-    a.download = `box_inventory_${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(downloadUrl);
-    sounds.playSuccess();
+    if (window.sounds) sounds.playSuccess();
+    if (typeof showToast === 'function') {
+      const msg = result && result.filePath
+        ? `CSV exported to ${result.filePath.split(/[/\\]/).pop()}`
+        : 'Inventory CSV exported successfully';
+      showToast(msg, 'success');
+    }
   } catch (err) {
-    sounds.playViolation();
+    if (window.sounds) sounds.playViolation();
     await customModal.alert('CSV Export failed: ' + err.message, { title: 'EXPORT ERROR', type: 'danger' });
   }
 }
@@ -3196,31 +3253,23 @@ async function exportCsvReport() {
     if (status && status !== 'ALL') params.append('status', status);
 
     const qs = params.toString();
-    const url = `/api/reports/export-csv${qs ? `?${qs}` : ''}`;
+    const endpoint = `/api/reports/export-csv${qs ? `?${qs}` : ''}`;
+    const filename = `dispatch_report_${new Date().toISOString().slice(0, 10)}.csv`;
 
-    const res = await fetch(url, {
-      headers: {
-        'Authorization': `Bearer ${api.token}`
-      }
-    });
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error || `HTTP ${res.status} Unauthorized/Error`);
+    const result = await api.downloadCsv(endpoint, filename);
+    if (result && result.canceled) {
+      return;
     }
 
-    const blob = await res.blob();
-    const downloadUrl = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = downloadUrl;
-    a.download = `dispatch_report_${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(downloadUrl);
-    sounds.playSuccess();
+    if (window.sounds) sounds.playSuccess();
+    if (typeof showToast === 'function') {
+      const msg = result && result.filePath
+        ? `CSV exported to ${result.filePath.split(/[/\\]/).pop()}`
+        : 'Dispatch Report CSV exported successfully';
+      showToast(msg, 'success');
+    }
   } catch (err) {
-    sounds.playViolation();
+    if (window.sounds) sounds.playViolation();
     await customModal.alert('CSV Export failed: ' + err.message, { title: 'EXPORT ERROR', type: 'danger' });
   }
 }
