@@ -6,76 +6,280 @@ let dailyChart = null;
 let modelChart = null;
 let systemAlarmCallback = null;
 let currentQuantityMode = 'parts';
+let cachedCatalogModels = [];
+let selectedModelId = null;
 
 function setQuantityMode(mode) {
-  const previousMode = currentQuantityMode;
-  currentQuantityMode = mode;
-  const btnBoxes = document.getElementById('btn-mode-boxes');
-  const btnParts = document.getElementById('btn-mode-parts');
-  const label = document.getElementById('dispatch-qty-label');
-  const input = document.getElementById('dispatch-target-qty');
-  const select = document.getElementById('dispatch-model-select');
-  const selectedOpt = select ? select.options[select.selectedIndex] : null;
-  const batchSize = selectedOpt ? (parseInt(selectedOpt.dataset.batchSize, 10) || 60) : 60;
-
-  const currentVal = input ? (parseInt(input.value, 10) || 0) : 0;
-
-  if (mode === 'boxes') {
-    if (btnBoxes) btnBoxes.className = 'toggle-segment active';
-    if (btnParts) btnParts.className = 'toggle-segment';
-    if (label) label.textContent = 'REQUIRED BOXES COUNT';
-
-    // Auto-convert from parts to boxes: divide by box capacity
-    if (previousMode === 'parts' && input) {
-      const boxesCount = currentVal > 0 ? Math.max(1, Math.round(currentVal / batchSize)) : 1;
-      input.value = boxesCount;
-    } else if (input && (!input.value || parseInt(input.value, 10) <= 0)) {
-      input.value = 1;
-    }
-  } else {
-    if (btnBoxes) btnBoxes.className = 'toggle-segment';
-    if (btnParts) btnParts.className = 'toggle-segment active';
-    if (label) label.textContent = `REQUIRED PARTS COUNT (${batchSize}/box)`;
-
-    // Auto-convert from boxes to parts: multiply by box capacity
-    if (previousMode === 'boxes' && input) {
-      const partsCount = currentVal > 0 ? currentVal * batchSize : batchSize;
-      input.value = partsCount;
-    } else if (input && (!input.value || parseInt(input.value, 10) <= 0)) {
-      input.value = batchSize;
-    }
-  }
-  if (input) {
-    input.focus();
-    input.select();
-  }
+  currentQuantityMode = 'parts';
   validateDispatchQuantity();
 }
 
-function validateDispatchQuantity() {
+function setDispatchParts(parts, modelId = selectedModelId) {
+  if (!modelId) modelId = selectedModelId;
+  const input = document.getElementById(`dispatch-target-qty-${modelId}`) || document.getElementById('dispatch-target-qty');
+  if (input) {
+    input.value = parts;
+    validateDispatchQuantity(modelId);
+    if (window.sounds) sounds.playClick();
+    input.focus();
+    input.select();
+  }
+}
+window.setDispatchParts = setDispatchParts;
+
+async function selectModelCard(modelId, preserveInput = false) {
+  if (!modelId) return;
+  selectedModelId = modelId;
+
   const select = document.getElementById('dispatch-model-select');
-  const selectedOpt = select ? select.options[select.selectedIndex] : null;
-  const input = document.getElementById('dispatch-target-qty');
-  const hintEl = document.getElementById('dispatch-qty-hint');
-  if (!input || !selectedOpt) return { valid: true };
+  if (select) select.value = modelId;
 
-  const qty = parseInt(input.value, 10);
-  const batchSize = parseInt(selectedOpt.dataset.batchSize, 10) || 20;
+  const model = cachedCatalogModels.find(m => m.modelId === modelId);
+  if (!model) return;
 
-  if (currentQuantityMode === 'parts') {
-    if (qty > 0 && qty % batchSize !== 0) {
-      const nextMultiple = Math.ceil(qty / batchSize) * batchSize;
-      if (hintEl) {
-        hintEl.style.display = 'block';
-        hintEl.innerHTML = `<span style="color: #dc2626; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;" onclick="document.getElementById('dispatch-target-qty').value=${nextMultiple}; validateDispatchQuantity();" title="Click to apply recommended quantity"><i class="ri-alert-line"></i> Not a multiple of ${batchSize}. Recommended: <strong style="text-decoration: underline;">${nextMultiple} parts</strong></span>`;
-      }
-      return { valid: false, qty, batchSize, nextMultiple };
+  // 1. Update row card visual highlights and drawer visibility
+  const allCards = document.querySelectorAll('.model-row-card');
+  allCards.forEach(card => {
+    const cId = card.dataset.modelId;
+    const isSelected = (cId === modelId);
+    card.classList.toggle('selected', isSelected);
+    const radioIcon = card.querySelector('.row-radio-icon i');
+    if (radioIcon) {
+      radioIcon.className = isSelected ? 'ri-radio-button-fill' : 'ri-radio-button-line';
     }
+  });
+
+  // 2. Load 4-week inward vs outward box comparison telemetry for this model
+  await loadModelFlow(modelId);
+
+  // 3. Focus quantity input
+  const input = document.getElementById(`dispatch-target-qty-${modelId}`) || document.getElementById('dispatch-target-qty');
+  const batchSize = model.batchSize || 60;
+  if (input) {
+    const currentVal = parseInt(input.value, 10);
+    if (!preserveInput || !currentVal || currentVal <= 0) {
+      input.value = batchSize;
+    }
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 100);
+  }
+
+  validateDispatchQuantity(modelId);
+}
+window.selectModelCard = selectModelCard;
+
+const modelFlowCharts = {};
+const modelFlowTimeframes = {};
+
+async function switchModelFlowTimeframe(modelId, timeframe) {
+  modelFlowTimeframes[modelId] = timeframe;
+  const togglesWrap = document.getElementById(`flow-toggles-${modelId}`);
+  if (togglesWrap) {
+    togglesWrap.querySelectorAll('.btn-flow-tf').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tf === timeframe);
+    });
+  }
+  await loadModelFlow(modelId, timeframe);
+}
+window.switchModelFlowTimeframe = switchModelFlowTimeframe;
+
+async function loadModelFlow(modelId, timeframe = null) {
+  const tf = timeframe || modelFlowTimeframes[modelId] || '4w';
+  modelFlowTimeframes[modelId] = tf;
+
+  const kpisEl = document.getElementById(`flow-kpis-${modelId}`);
+  const canvas = document.getElementById(`flow-canvas-${modelId}`);
+  if (!canvas) return;
+
+  try {
+    const res = await api.getModelBoxFlow(modelId, tf);
+    if (!res || !res.points) return;
+
+    if (kpisEl && res.summary) {
+      const netSign = (res.summary.netBalance >= 0) ? '+' : '';
+      kpisEl.innerHTML = `
+        <span class="flow-kpi-badge inward"><i class="ri-arrow-down-line"></i> INWARD: <strong>${res.summary.totalInward}</strong> BOXES</span>
+        <span class="flow-kpi-badge outward"><i class="ri-arrow-up-line"></i> OUTWARD: <strong>${res.summary.totalOutward}</strong> BOXES</span>
+        <span class="flow-kpi-badge net">NET: <strong>${netSign}${res.summary.netBalance}</strong> BOXES</span>
+      `;
+    }
+
+    if (modelFlowCharts[modelId]) {
+      modelFlowCharts[modelId].destroy();
+      delete modelFlowCharts[modelId];
+    }
+
+    const labels = res.points.map(p => p.label);
+    const inwardData = res.points.map(p => p.inwardBoxes);
+    const outwardData = res.points.map(p => p.outwardBoxes);
+
+    const ctx = canvas.getContext('2d');
+    modelFlowCharts[modelId] = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'Inward Boxes',
+            data: inwardData,
+            backgroundColor: 'rgba(16, 185, 129, 0.85)',
+            borderColor: '#059669',
+            borderWidth: 1.5,
+            borderRadius: 4,
+            barPercentage: 0.65,
+            categoryPercentage: 0.72
+          },
+          {
+            label: 'Outward Boxes',
+            data: outwardData,
+            backgroundColor: 'rgba(2, 132, 199, 0.85)',
+            borderColor: '#0284c7',
+            borderWidth: 1.5,
+            borderRadius: 4,
+            barPercentage: 0.65,
+            categoryPercentage: 0.72
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 250 },
+        interaction: {
+          mode: 'index',
+          intersect: false
+        },
+        plugins: {
+          legend: {
+            display: true,
+            position: 'top',
+            align: 'end',
+            labels: {
+              font: { family: 'Courier New, monospace', size: 11, weight: 'bold' },
+              color: '#334155',
+              boxWidth: 12,
+              boxHeight: 12,
+              usePointStyle: true,
+              pointStyle: 'rectRounded'
+            }
+          },
+          tooltip: {
+            backgroundColor: 'rgba(15, 23, 42, 0.94)',
+            titleFont: { family: 'Courier New, monospace', size: 11, weight: 'bold' },
+            bodyFont: { family: 'Courier New, monospace', size: 11 },
+            padding: 10,
+            cornerRadius: 4,
+            callbacks: {
+              label: (context) => ` ${context.dataset.label}: ${context.raw} boxes`,
+              afterBody: (items) => {
+                if (items.length >= 2) {
+                  const inVal = items[0].raw || 0;
+                  const outVal = items[1].raw || 0;
+                  const net = inVal - outVal;
+                  return `\nNet Flow: ${net >= 0 ? '+' : ''}${net} boxes`;
+                }
+                return '';
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            grid: { display: false },
+            ticks: {
+              font: { family: 'Courier New, monospace', size: 10.5, weight: 'bold' },
+              color: '#475569'
+            }
+          },
+          y: {
+            beginAtZero: true,
+            grid: { color: '#f1f5f9', drawBorder: false },
+            ticks: {
+              font: { family: 'Courier New, monospace', size: 10.5 },
+              color: '#64748b',
+              precision: 0,
+              stepSize: 1
+            }
+          }
+        }
+      }
+    });
+  } catch (err) {
+    console.error('Failed to load flow data for ' + modelId, err);
+  }
+}
+window.loadModelFlow = loadModelFlow;
+
+function validateDispatchQuantity(modelId = selectedModelId) {
+  if (!modelId) modelId = selectedModelId;
+  const model = cachedCatalogModels.find(m => m.modelId === modelId);
+  const input = document.getElementById(`dispatch-target-qty-${modelId}`) || document.getElementById('dispatch-target-qty');
+  const hintEl = document.getElementById(`dispatch-qty-hint-${modelId}`) || document.getElementById('dispatch-qty-hint');
+  const calcBox = document.getElementById(`launch-calc-box-readout-${modelId}`) || document.getElementById('launch-calc-box-readout');
+  const calcCount = document.getElementById(`launch-calc-boxes-count-${modelId}`) || document.getElementById('launch-calc-boxes-count');
+  const calcLabel = document.getElementById(`launch-calc-boxes-label-${modelId}`) || document.getElementById('launch-calc-boxes-label');
+
+  if (!input) return { valid: true };
+
+  const qty = parseInt(input.value, 10) || 0;
+  const batchSize = (model && model.batchSize) ? model.batchSize : 60;
+  const availableParts = (model && model.availableParts) ? model.availableParts : 0;
+  const availableBoxes = (model && model.availableBoxes) ? model.availableBoxes : 0;
+
+  if (qty <= 0) {
+    if (calcBox) {
+      calcBox.className = 'drawer-box-calc-pill';
+      if (calcCount) calcCount.textContent = '0';
+      if (calcLabel) calcLabel.textContent = 'BOXES';
+    }
+    if (hintEl) {
+      hintEl.style.display = 'none';
+      hintEl.innerHTML = '';
+    }
+    return { valid: false, qty: 0, batchSize };
+  }
+
+  const isMultiple = (qty % batchSize === 0);
+  const boxesCount = Math.floor(qty / batchSize);
+
+  if (isMultiple) {
+    if (calcBox) {
+      calcBox.className = 'drawer-box-calc-pill';
+      if (calcCount) calcCount.textContent = boxesCount;
+      if (calcLabel) calcLabel.textContent = boxesCount === 1 ? 'FULL BOX' : 'FULL BOXES';
+    }
+  } else {
+    if (calcBox) {
+      calcBox.className = 'drawer-box-calc-pill calc-invalid';
+      if (calcCount) calcCount.textContent = '~' + (qty / batchSize).toFixed(1);
+      if (calcLabel) calcLabel.textContent = 'FRACTIONAL';
+    }
+  }
+
+  // Stock check & Packaging multiple alert (positioned right of box pill)
+  if (qty > availableParts && availableParts > 0) {
+    if (hintEl) {
+      hintEl.className = 'drawer-qty-hint hint-danger';
+      hintEl.style.display = 'inline-flex';
+      hintEl.innerHTML = `<span><i class="ri-error-warning-fill"></i> Requested ${qty} parts exceeds stock (${availableParts} parts / ${availableBoxes} boxes).</span>`;
+    }
+    return { valid: false, qty, batchSize, error: 'insufficient_stock' };
+  } else if (!isMultiple) {
+    const nextMultiple = Math.ceil(qty / batchSize) * batchSize;
+    const nextBoxes = nextMultiple / batchSize;
+    if (hintEl) {
+      hintEl.className = 'drawer-qty-hint';
+      hintEl.style.display = 'inline-flex';
+      hintEl.innerHTML = `<span><i class="ri-alert-line"></i> Not a multiple of packaging standard.</span> <a href="javascript:void(0)" onclick="setDispatchParts(${nextMultiple}, '${modelId}')">Set to ${nextMultiple} parts (${nextBoxes} ${nextBoxes === 1 ? 'box' : 'boxes'})</a>`;
+    }
+    return { valid: false, qty, batchSize, nextMultiple };
   }
 
   if (hintEl) {
     hintEl.style.display = 'none';
-    hintEl.textContent = '';
+    hintEl.innerHTML = '';
   }
   return { valid: true, qty, batchSize };
 }
@@ -894,7 +1098,7 @@ document.addEventListener('click', (e) => {
 async function loadDispatchView() {
   await loadModelSelector();
   await checkActiveDispatch();
-  const input = document.getElementById('dispatch-target-qty');
+  const input = document.getElementById('dispatch-target-qty-' + selectedModelId) || document.getElementById('dispatch-target-qty');
   if (input && !activeTx) {
     setTimeout(() => {
       input.focus();
@@ -905,78 +1109,150 @@ async function loadDispatchView() {
 
 async function loadModelSelector(preserveSelected = true) {
   try {
-    const select = document.getElementById('dispatch-model-select');
-    if (!select) return;
-    const currentVal = (preserveSelected && select.value) ? select.value : null;
-
     const res = await api.getModels();
-    select.innerHTML = '';
+    cachedCatalogModels = res.models || [];
 
-    if (!res.models || res.models.length === 0) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = 'No models available';
-      opt.dataset.availableBoxes = 0;
-      opt.dataset.availableParts = 0;
-      select.appendChild(opt);
-    } else {
-      res.models.forEach(m => {
+    // Keep hidden select synced for backward compatibility
+    const select = document.getElementById('dispatch-model-select');
+    if (select) {
+      select.innerHTML = '';
+      cachedCatalogModels.forEach(m => {
         const opt = document.createElement('option');
         opt.value = m.modelId;
         opt.textContent = m.modelName ? `${m.modelName} (Part: ${m.customerPartNo})` : m.modelId;
-        opt.dataset.availableBoxes = m.availableBoxes;
-        opt.dataset.availableParts = m.availableParts;
-        opt.dataset.batchSize = m.batchSize || 20;
+        opt.dataset.availableBoxes = m.availableBoxes || 0;
+        opt.dataset.availableParts = m.availableParts || 0;
+        opt.dataset.batchSize = m.batchSize || 60;
         select.appendChild(opt);
       });
     }
 
-    if (currentVal && Array.from(select.options).some(o => o.value === currentVal)) {
-      select.value = currentVal;
+    const container = document.getElementById('dispatch-models-list');
+    if (!container) return;
+
+    if (!cachedCatalogModels || cachedCatalogModels.length === 0) {
+      container.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted); font-family: var(--font-mono); background: #ffffff; border: 1.5px dashed var(--border-panel); border-radius: var(--border-radius);"><i class="ri-inbox-line" style="font-size: 24px; display: block; margin-bottom: 6px;"></i>No active product models found in database.</div>';
+      return;
     }
 
-    if (window.scadaDropdown && select) {
-      window.scadaDropdown.attach(select).sync();
-    }
+    // Determine target model ID
+    const targetModelId = (preserveSelected && selectedModelId && cachedCatalogModels.some(m => m.modelId === selectedModelId))
+      ? selectedModelId
+      : ((cachedCatalogModels.find(m => (m.availableBoxes || 0) > 0) || cachedCatalogModels[0])?.modelId || null);
 
-    updateAvailableStockDisplay();
-    select.onchange = () => {
-      updateAvailableStockDisplay();
-      validateDispatchQuantity();
-      if (select._scadaDropdown) select._scadaDropdown.sync();
-    };
+    selectedModelId = targetModelId;
+
+    container.innerHTML = '';
+    cachedCatalogModels.forEach(m => {
+      const isSelected = (m.modelId === selectedModelId);
+      const isStocked = ((m.availableBoxes || 0) > 0);
+      const batchSize = m.batchSize || 60;
+
+      const card = document.createElement('div');
+      card.className = `model-row-card ${isSelected ? 'selected' : ''} ${!isStocked ? 'no-stock' : ''}`;
+      card.id = `model-row-${m.modelId}`;
+      card.dataset.modelId = m.modelId;
+
+      card.innerHTML = `
+        <!-- Compact Full-Width Row Header -->
+        <div class="model-row-header" onclick="selectModelCard('${m.modelId}', true)">
+          <div class="row-header-left">
+            <span class="row-radio-icon"><i class="${isSelected ? 'ri-radio-button-fill' : 'ri-radio-button-line'}"></i></span>
+            <span class="row-model-name">${m.modelName || m.modelId}</span>
+          </div>
+
+          <div class="row-header-mid">
+            <div class="row-meta-item">
+              <span class="row-meta-tag">CUSTOMER PART:</span>
+              <strong class="row-custpart">${m.customerPartNo || '--'}</strong>
+            </div>
+            <div class="row-meta-item">
+              <span class="row-meta-tag">PACKAGING:</span>
+              <span class="row-spec-badge">${batchSize} PCS/BOX</span>
+            </div>
+          </div>
+
+          <div class="row-header-right">
+            <div class="row-stock-group">
+              <span class="row-stock-parts">${m.availableParts || 0} PARTS</span>
+              <span class="row-stock-boxes">[${m.availableBoxes || 0} ${m.availableBoxes === 1 ? 'Box' : 'Boxes'}]</span>
+            </div>
+            <div class="row-chevron"><i class="ri-arrow-down-s-line"></i></div>
+          </div>
+        </div>
+
+        <!-- Dropdown Accordion Drawer (Revealed only on selection) -->
+        <div class="model-row-drawer" id="model-drawer-${m.modelId}">
+          <!-- Top: Parts Count Input, Box Pill, Inline Warning & Start Dispatch -->
+          <div class="drawer-control-deck">
+            <div class="drawer-qty-group">
+              <label class="drawer-qty-label">REQUIRED PARTS COUNT (${batchSize}/BOX STANDARD):</label>
+              <div class="drawer-input-controls">
+                <div class="drawer-input-wrap">
+                  <input type="number" id="dispatch-target-qty-${m.modelId}" class="form-control drawer-parts-input"
+                    value="${batchSize}" min="1" step="1"
+                    oninput="validateDispatchQuantity('${m.modelId}')"
+                    onkeydown="if(event.key==='Enter') handleStartDispatch('${m.modelId}')">
+                  <span class="drawer-unit-badge">PARTS</span>
+                </div>
+                <div id="launch-calc-box-readout-${m.modelId}" class="drawer-box-calc-pill">
+                  <span id="launch-calc-boxes-count-${m.modelId}">1</span>&nbsp;<span id="launch-calc-boxes-label-${m.modelId}">FULL BOX</span>
+                </div>
+                <!-- Warning hint placed inline directly to right of box pill -->
+                <div id="dispatch-qty-hint-${m.modelId}" class="drawer-qty-hint" style="display: none;"></div>
+              </div>
+            </div>
+
+            <button type="button" class="btn-drawer-start" onclick="handleStartDispatch('${m.modelId}')">
+              <i class="ri-play-circle-fill"></i> START DISPATCH <span class="drawer-shortcut-tag">ENTER ↵</span>
+            </button>
+          </div>
+
+          <!-- Bottom: Inward vs Outward Graph Telemetry with Timeframe Toggles -->
+          <div class="drawer-flow-section">
+            <div class="drawer-flow-header">
+              <div class="drawer-flow-title-wrap">
+                <span class="drawer-flow-title"><i class="ri-bar-chart-2-fill"></i> INWARD VS OUTWARD BOXES FLOW</span>
+                <div class="flow-timeframe-toggles" id="flow-toggles-${m.modelId}">
+                  <button type="button" class="btn-flow-tf" data-tf="7d" onclick="switchModelFlowTimeframe('${m.modelId}', '7d')">7 DAYS</button>
+                  <button type="button" class="btn-flow-tf" data-tf="15d" onclick="switchModelFlowTimeframe('${m.modelId}', '15d')">15 DAYS</button>
+                  <button type="button" class="btn-flow-tf active" data-tf="4w" onclick="switchModelFlowTimeframe('${m.modelId}', '4w')">4 WEEKS</button>
+                  <button type="button" class="btn-flow-tf" data-tf="6m" onclick="switchModelFlowTimeframe('${m.modelId}', '6m')">6 MONTHS</button>
+                </div>
+              </div>
+              <div class="drawer-flow-kpis" id="flow-kpis-${m.modelId}">
+                <span class="flow-kpi-badge inward"><i class="ri-arrow-down-line"></i> INWARD: ...</span>
+                <span class="flow-kpi-badge outward"><i class="ri-arrow-up-line"></i> OUTWARD: ...</span>
+                <span class="flow-kpi-badge net">NET: ...</span>
+              </div>
+            </div>
+
+            <div class="drawer-flow-chart-wrap" id="flow-chart-wrap-${m.modelId}">
+              <canvas id="flow-canvas-${m.modelId}"></canvas>
+            </div>
+          </div>
+        </div>
+      `;
+      container.appendChild(card);
+    });
+
+    selectModelCard(selectedModelId, preserveSelected);
   } catch (err) {
     console.error('Failed to load models:', err.message);
   }
 }
 
 function updateAvailableStockDisplay() {
-  const select = document.getElementById('dispatch-model-select');
-  if (!select) return;
-  const selectedOpt = select.options[select.selectedIndex];
+  const model = cachedCatalogModels.find(m => m.modelId === selectedModelId);
   const boxEl = document.getElementById('disp-avail-boxes');
   const partEl = document.getElementById('disp-avail-parts');
 
-  if (!selectedOpt) {
-    if (boxEl) boxEl.textContent = '0 BOXES';
-    if (partEl) partEl.textContent = '0 PARTS';
-    return;
-  }
-
-  const boxes = selectedOpt.dataset.availableBoxes || 0;
-  const parts = selectedOpt.dataset.availableParts || 0;
-  const batchSize = parseInt(selectedOpt.dataset.batchSize, 10) || 60;
-
-  if (boxEl) boxEl.textContent = `${boxes} BOXES`;
-  if (partEl) partEl.textContent = `${parts} AVAILABLE PARTS`;
-
-  const label = document.getElementById('dispatch-qty-label');
-  if (currentQuantityMode === 'parts' && label) {
-    label.textContent = `REQUIRED PARTS COUNT (${batchSize}/box)`;
+  if (model) {
+    if (boxEl) boxEl.textContent = `${model.availableBoxes || 0} BOXES`;
+    if (partEl) partEl.textContent = `${model.availableParts || 0} AVAILABLE PARTS`;
   }
   validateDispatchQuantity();
 }
-
 
 async function checkActiveDispatch() {
   try {
@@ -993,21 +1269,39 @@ async function checkActiveDispatch() {
   }
 }
 
-async function handleStartDispatch() {
-  const select = document.getElementById('dispatch-model-select');
-  const modelId = select.value;
-  const input = document.getElementById('dispatch-target-qty');
-  const qty = parseInt(input.value, 10);
-
-  if (!qty || qty <= 0) {
-    await customModal.alert('Please enter a positive required quantity', { title: 'INVALID QUANTITY', type: 'warning' });
+async function handleStartDispatch(explicitModelId = null) {
+  const modelId = explicitModelId || selectedModelId || (document.getElementById('dispatch-model-select') ? document.getElementById('dispatch-model-select').value : null);
+  if (!modelId) {
+    await customModal.alert('Please select a product model to dispatch.', { title: 'NO MODEL SELECTED', type: 'warning' });
     return;
   }
 
-  const selectedOpt = select.options[select.selectedIndex];
-  const batchSize = selectedOpt ? (parseInt(selectedOpt.dataset.batchSize, 10) || 20) : 20;
+  const model = cachedCatalogModels.find(m => m.modelId === modelId);
+  const batchSize = (model && model.batchSize) || 60;
+  const availableParts = (model && model.availableParts) || 0;
 
-  if (currentQuantityMode === 'parts' && qty % batchSize !== 0) {
+  const input = document.getElementById(`dispatch-target-qty-${modelId}`) || document.getElementById('dispatch-target-qty');
+  const qty = parseInt(input ? input.value : 0, 10);
+
+  if (!qty || qty <= 0) {
+    await customModal.alert('Please enter a positive required parts quantity.', { title: 'INVALID QUANTITY', type: 'warning' });
+    if (input) input.focus();
+    return;
+  }
+
+  if (availableParts <= 0) {
+    sounds.playViolation();
+    await customModal.alert(`No available stock in warehouse for model ${modelId}. Cannot initiate dispatch session.`, { title: 'OUT OF STOCK', type: 'danger' });
+    return;
+  }
+
+  if (qty > availableParts) {
+    sounds.playViolation();
+    await customModal.alert(`Requested quantity (${qty} parts) exceeds total available warehouse stock (${availableParts} parts across all boxes).`, { title: 'INSUFFICIENT STOCK', type: 'warning' });
+    return;
+  }
+
+  if (qty % batchSize !== 0) {
     const nextMultiple = Math.ceil(qty / batchSize) * batchSize;
     const boxesCount = nextMultiple / batchSize;
     sounds.playViolation();
@@ -1021,14 +1315,15 @@ async function handleStartDispatch() {
       }
     );
     if (applyRecommended) {
-      input.value = nextMultiple;
-      validateDispatchQuantity();
+      if (input) input.value = nextMultiple;
+      validateDispatchQuantity(modelId);
+      return handleStartDispatch(modelId);
     }
     return;
   }
 
   try {
-    const res = await api.planDispatch(modelId, currentQuantityMode, qty);
+    const res = await api.planDispatch(modelId, 'parts', qty);
     activeTx = res.transaction;
     sounds.playSuccess();
     renderActiveDispatchUI();
@@ -1183,14 +1478,14 @@ async function renderIdleDispatchUI() {
   // Reload available models and live stock count for the initiate new dispatch session card
   await loadModelSelector(true);
 
-  const targetQtyInput = document.getElementById('dispatch-target-qty');
+  const targetQtyInput = document.getElementById('dispatch-target-qty-' + selectedModelId) || document.getElementById('dispatch-target-qty');
   const select = document.getElementById('dispatch-model-select');
   const selectedOpt = select ? select.options[select.selectedIndex] : null;
   const batchSize = selectedOpt ? (parseInt(selectedOpt.dataset.batchSize, 10) || 60) : 60;
 
   if (targetQtyInput) {
     if (!targetQtyInput.value || parseInt(targetQtyInput.value, 10) <= 0) {
-      targetQtyInput.value = (currentQuantityMode === 'parts') ? batchSize : 1;
+      targetQtyInput.value = batchSize;
     }
     setTimeout(() => {
       targetQtyInput.focus();

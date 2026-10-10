@@ -193,6 +193,135 @@ router.get('/models', authenticate, async (req, res) => {
     }
 });
 
+// GET /api/boxes/flow/:modelId - Inward vs Outward boxes flow (supports ?timeframe=7d|15d|4w|6m)
+router.get('/flow/:modelId', authenticate, async (req, res) => {
+    try {
+        const { getStatus } = require('../config/db');
+        if (!getStatus().isConnected) {
+            return res.json({ success: true, points: [], summary: { totalInward: 0, totalOutward: 0, netBalance: 0 } });
+        }
+
+        const { modelId } = req.params;
+        const timeframe = req.query.timeframe || '4w';
+        const now = new Date();
+        const msPerDay = 24 * 60 * 60 * 1000;
+
+        const points = [];
+
+        if (timeframe === '7d') {
+            for (let i = 6; i >= 0; i--) {
+                const targetDay = new Date(now.getTime() - (i * msPerDay));
+                const start = new Date(targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate(), 0, 0, 0, 0);
+                const end = new Date(targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate(), 23, 59, 59, 999);
+                const label = i === 0 ? 'Today' : start.toLocaleDateString('default', { day: '2-digit', month: 'short' });
+
+                const inwardBoxes = await DispatchBox.countDocuments({
+                    modelId,
+                    closedAt: { $gte: start, $lte: end }
+                });
+                const outwardBoxes = await DispatchBox.countDocuments({
+                    modelId,
+                    status: 'dispatched',
+                    $or: [
+                        { dispatchedAt: { $gte: start, $lte: end } },
+                        { dispatchedAt: null, updatedAt: { $gte: start, $lte: end } }
+                    ]
+                });
+                points.push({ label, startDate: start.toISOString().slice(0, 10), inwardBoxes, outwardBoxes });
+            }
+        } else if (timeframe === '15d') {
+            for (let i = 14; i >= 0; i--) {
+                const targetDay = new Date(now.getTime() - (i * msPerDay));
+                const start = new Date(targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate(), 0, 0, 0, 0);
+                const end = new Date(targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate(), 23, 59, 59, 999);
+                const label = i === 0 ? 'Today' : start.toLocaleDateString('default', { day: '2-digit', month: 'short' });
+
+                const inwardBoxes = await DispatchBox.countDocuments({
+                    modelId,
+                    closedAt: { $gte: start, $lte: end }
+                });
+                const outwardBoxes = await DispatchBox.countDocuments({
+                    modelId,
+                    status: 'dispatched',
+                    $or: [
+                        { dispatchedAt: { $gte: start, $lte: end } },
+                        { dispatchedAt: null, updatedAt: { $gte: start, $lte: end } }
+                    ]
+                });
+                points.push({ label, startDate: start.toISOString().slice(0, 10), inwardBoxes, outwardBoxes });
+            }
+        } else if (timeframe === '6m') {
+            for (let i = 5; i >= 0; i--) {
+                const start = new Date(now.getFullYear(), now.getMonth() - i, 1, 0, 0, 0, 0);
+                const end = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
+                const label = start.toLocaleDateString('default', { month: 'short', year: 'numeric' });
+
+                const inwardBoxes = await DispatchBox.countDocuments({
+                    modelId,
+                    closedAt: { $gte: start, $lte: end }
+                });
+                const outwardBoxes = await DispatchBox.countDocuments({
+                    modelId,
+                    status: 'dispatched',
+                    $or: [
+                        { dispatchedAt: { $gte: start, $lte: end } },
+                        { dispatchedAt: null, updatedAt: { $gte: start, $lte: end } }
+                    ]
+                });
+                points.push({ label, startDate: start.toISOString().slice(0, 7), inwardBoxes, outwardBoxes });
+            }
+        } else {
+            // Default: '4w'
+            for (let i = 3; i >= 0; i--) {
+                const end = new Date(now.getTime() - (i * 7 * msPerDay));
+                const start = new Date(now.getTime() - ((i + 1) * 7 * msPerDay));
+                const fmt = (d) => d.toLocaleDateString('default', { day: '2-digit', month: 'short' });
+                const label = i === 0 ? 'Current Week' : `Wk -${i} (${fmt(start)} – ${fmt(end)})`;
+
+                const inwardBoxes = await DispatchBox.countDocuments({
+                    modelId,
+                    closedAt: { $gte: start, $lt: end }
+                });
+
+                const outwardBoxes = await DispatchBox.countDocuments({
+                    modelId,
+                    status: 'dispatched',
+                    $or: [
+                        { dispatchedAt: { $gte: start, $lt: end } },
+                        { dispatchedAt: null, updatedAt: { $gte: start, $lt: end } }
+                    ]
+                });
+
+                points.push({
+                    label,
+                    startDate: start.toISOString().slice(0, 10),
+                    endDate: end.toISOString().slice(0, 10),
+                    inwardBoxes,
+                    outwardBoxes
+                });
+            }
+        }
+
+        const totalInward = points.reduce((sum, p) => sum + p.inwardBoxes, 0);
+        const totalOutward = points.reduce((sum, p) => sum + p.outwardBoxes, 0);
+
+        res.json({
+            success: true,
+            modelId,
+            timeframe,
+            summary: {
+                totalInward,
+                totalOutward,
+                netBalance: totalInward - totalOutward
+            },
+            points,
+            weeks: points
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // GET /api/boxes/export-csv - Download current inventory as CSV (same filters as main list)
 router.get('/export-csv', authenticate, requireRole('supervisor'), async (req, res) => {
     try {

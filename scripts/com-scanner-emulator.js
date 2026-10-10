@@ -232,12 +232,58 @@ async function getActiveDispatchNextTarget() {
     }
 }
 
-// Auto-Scan Routine: Scans all pending boxes in active session one by one
+// Fetch Random Pending Target from Active Dispatch Session
+async function getActiveDispatchRandomTarget() {
+    if (!isMongoConnected || !DispatchTransaction || !DispatchBox) return null;
+
+    try {
+        const activeTx = await DispatchTransaction.findOne({ status: 'in_progress' }).lean();
+        if (!activeTx) return { status: 'no_active' };
+
+        const scannedBoxIds = (activeTx.scannedBoxes || []).map(s => s.boxId.toString());
+        const pendingBoxes = (activeTx.allocatedBoxes || []).filter(b => !scannedBoxIds.includes(b.boxId.toString()));
+
+        if (pendingBoxes.length === 0) {
+            return {
+                status: 'complete',
+                dispatchId: activeTx.dispatchId,
+                total: activeTx.allocatedBoxes.length
+            };
+        }
+
+        // Pick a random box from all pending unscanned boxes
+        const randomIndex = Math.floor(Math.random() * pendingBoxes.length);
+        const randomBox = pendingBoxes[randomIndex];
+
+        let payload = randomBox.batchQrData;
+        if (!payload && randomBox.boxId) {
+            const boxDoc = await DispatchBox.findById(randomBox.boxId).lean();
+            if (boxDoc && boxDoc.batchQrData) payload = boxDoc.batchQrData;
+        }
+        if (!payload) payload = `BOX-${randomBox.batchNumber}`;
+
+        return {
+            status: 'pending',
+            dispatchId: activeTx.dispatchId,
+            boxId: randomBox.boxId,
+            batchNumber: randomBox.batchNumber,
+            completedCount: randomBox.completedCount,
+            qrData: payload,
+            scannedCount: scannedBoxIds.length,
+            totalCount: activeTx.allocatedBoxes.length,
+            remainingCount: pendingBoxes.length
+        };
+    } catch (e) {
+        return null;
+    }
+}
+
+// Auto-Scan Routine: Scans all pending boxes in active session one by one (FIFO Order)
 async function runAutoScan() {
     if (isAutoScanning) return;
     isAutoScanning = true;
 
-    console.log(`\n${C.yellow}⚡ STARTING CONTINUOUS AUTO-SCAN FOR ACTIVE DISPATCH...${C.reset}`);
+    console.log(`\n${C.yellow}⚡ STARTING CONTINUOUS AUTO-SCAN (FIFO ORDER) FOR ACTIVE DISPATCH...${C.reset}`);
 
     let lastScannedBoxId = null;
     let retries = 0;
@@ -276,6 +322,50 @@ async function runAutoScan() {
     promptUser();
 }
 
+// Auto-Random Routine: Scans pending boxes from active session in randomized order
+async function runAutoRandomScan() {
+    if (isAutoScanning) return;
+    isAutoScanning = true;
+
+    console.log(`\n${C.magenta}🎲 STARTING CONTINUOUS AUTO-RANDOM SCAN FOR ACTIVE DISPATCH...${C.reset}`);
+
+    let lastScannedBoxId = null;
+    let retries = 0;
+
+    while (isAutoScanning) {
+        const target = await getActiveDispatchRandomTarget();
+        if (!target || target.status === 'no_active') {
+            console.log(`${C.yellow}ℹ No active dispatch session found. Start a dispatch in the browser.${C.reset}`);
+            break;
+        }
+
+        if (target.status === 'complete') {
+            console.log(`\n${C.green}🎉 ALL ${target.total} BOXES IN DISPATCH ${target.dispatchId} HAVE BEEN SCANNED!${C.reset}`);
+            break;
+        }
+
+        if (target.boxId === lastScannedBoxId) {
+            retries++;
+            if (retries > 2) {
+                console.log(`${C.yellow}⚠ Box #${target.batchNumber} was not verified by server. Waiting 2s before retry...${C.reset}`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        } else {
+            retries = 0;
+            lastScannedBoxId = target.boxId;
+        }
+
+        console.log(`\n${C.magenta}🎲 [RANDOM] Scanning Box #${target.batchNumber} (${target.scannedCount + 1}/${target.totalCount}, ${target.remainingCount} remaining): ${C.bright}${target.qrData}${C.reset}`);
+        transmitBarcode(target.qrData);
+
+        // Realistic pause between conveyor scans (1.5 seconds)
+        await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+
+    isAutoScanning = false;
+    promptUser();
+}
+
 function promptUser() {
     if (isAutoScanning) return;
     process.stdout.write(`\n${C.bright}${C.cyan}SCANNER > ${C.reset}`);
@@ -295,7 +385,9 @@ async function printHeader() {
 
     console.log(`\n${C.bright}KEYBOARD SHORTCUTS:${C.reset}`);
     console.log(`  ${C.cyan}[SPACE] / [n]${C.reset}  Auto-scan NEXT FIFO box from active dispatch session`);
-    console.log(`  ${C.cyan}[a]${C.reset}            Run continuous AUTO-SCAN for entire active order`);
+    console.log(`  ${C.cyan}[a]${C.reset}            Run continuous AUTO-SCAN (FIFO order) for entire active order`);
+    console.log(`  ${C.cyan}[r]${C.reset}            Run continuous AUTO-RANDOM scan (random order) for active order`);
+    console.log(`  ${C.cyan}[rn]${C.reset}           Scan a single RANDOM box from active order`);
     console.log(`  ${C.cyan}[s]${C.reset}            Stop continuous auto-scan`);
     console.log(`  ${C.cyan}[Enter text]${C.reset}   Type or paste any custom barcode/QR string and press [ENTER]`);
     console.log(`  ${C.cyan}[t]${C.reset}            Send sample test barcode payload`);
@@ -316,6 +408,13 @@ async function main() {
 
     await printHeader();
     promptUser();
+
+    // CLI auto-run flags
+    if (args.includes('--random') || args.includes('-r')) {
+        setTimeout(runAutoRandomScan, 600);
+    } else if (args.includes('--auto') || args.includes('-a')) {
+        setTimeout(runAutoScan, 600);
+    }
 
     rl = readline.createInterface({
         input: process.stdin,
@@ -344,6 +443,30 @@ async function main() {
 
         if (input.toLowerCase() === 'a') {
             runAutoScan();
+            return;
+        }
+
+        if (input.toLowerCase() === 'r') {
+            runAutoRandomScan();
+            return;
+        }
+
+        if (input.toLowerCase() === 'rn') {
+            const target = await getActiveDispatchRandomTarget();
+            if (!target || target.status === 'no_active') {
+                console.log(`${C.yellow}ℹ No active dispatch session found. Start a dispatch in the browser or type a manual payload.${C.reset}`);
+                promptUser();
+                return;
+            }
+
+            if (target.status === 'complete') {
+                console.log(`${C.green}✔ Active dispatch ${target.dispatchId} is already 100% scanned!${C.reset}`);
+                promptUser();
+                return;
+            }
+
+            console.log(`${C.magenta}🎲 Scanning Random Target: Box #${target.batchNumber} (${target.scannedCount + 1}/${target.totalCount}, ${target.remainingCount} remaining)...${C.reset}`);
+            transmitBarcode(target.qrData);
             return;
         }
 

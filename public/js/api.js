@@ -188,6 +188,10 @@ const api = {
     return this.request('/api/boxes/models');
   },
 
+  async getModelBoxFlow(modelId, timeframe = '4w') {
+    return this.request(`/api/boxes/flow/${encodeURIComponent(modelId)}?timeframe=${encodeURIComponent(timeframe)}`);
+  },
+
   async holdBox(id, reason, remarks) {
     return this.request(`/api/boxes/${id}/hold`, {
       method: 'POST',

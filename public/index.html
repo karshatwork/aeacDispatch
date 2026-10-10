@@ -301,50 +301,19 @@
           </div>
 
           <!-- SETUP CARD (WHEN NO ACTIVE ORDER) -->
+          <!-- SETUP CARD (WHEN NO ACTIVE ORDER) -->
           <div id="dispatch-setup-card" class="scada-panel">
             <div class="scada-panel-header">
-              <span><i class="ri-add-box-line"></i> INITIATE NEW DISPATCH SESSION</span>
+              <span><i class="ri-dashboard-line"></i> INITIATE NEW DISPATCH SESSION</span>
             </div>
-            <div class="scada-panel-body">
-              <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 180px; gap: 16px; align-items: flex-end;">
-                <div class="form-group" style="margin-bottom: 0;">
-                  <label class="form-label">SELECT PRODUCT MODEL</label>
-                  <select id="dispatch-model-select" class="form-control"></select>
-                </div>
 
-                <div class="form-group" style="margin-bottom: 0;">
-                  <label class="form-label">AVAILABLE STOCK</label>
-                  <div
-                    style="background: #f1f5f9; border: 1px solid var(--border-light); padding: 7px 12px; border-radius: var(--border-radius-sm); display: flex; justify-content: space-between; align-items: center;">
-                    <span id="disp-avail-boxes"
-                      style="font-weight: 800; font-family: var(--font-mono); color: var(--color-primary);">0
-                      BOXES</span>
-                    <span id="disp-avail-parts"
-                      style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);">0 PARTS</span>
-                  </div>
-                </div>
+            <!-- Hidden select retained for backward-compatibility -->
+            <select id="dispatch-model-select" class="no-scada" style="display: none;"></select>
 
-                <div class="form-group" style="margin-bottom: 0;">
-                  <label id="dispatch-qty-label" class="form-label">REQUIRED PARTS COUNT (60/box)</label>
-                  <div style="display: flex; gap: 8px; align-items: center;">
-                    <div class="segmented-toggle">
-                      <button type="button" id="btn-mode-boxes" class="toggle-segment"
-                        onclick="setQuantityMode('boxes')">BOXES</button>
-                      <button type="button" id="btn-mode-parts" class="toggle-segment active"
-                        onclick="setQuantityMode('parts')">PARTS</button>
-                    </div>
-                    <input type="number" id="dispatch-target-qty" class="form-control" value="60" min="1"
-                      oninput="validateDispatchQuantity()"
-                      onkeydown="if(event.key==='Enter') handleStartDispatch()"
-                      style="width: 90px; text-align: center; font-weight: 700; font-family: var(--font-mono);">
-                  </div>
-                  <div id="dispatch-qty-hint" style="display: none; font-size: 11px; font-family: var(--font-mono); margin-top: 4px; line-height: 1.2;"></div>
-                </div>
-
-                <button class="btn-scada btn-success" style="height: 38px; width: 100%;"
-                  onclick="handleStartDispatch()">
-                  <i class="ri-play-line"></i> START DISPATCH
-                </button>
+            <div class="scada-panel-body" style="padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+              <!-- FULL-WIDTH MODEL ROW CARDS ACCORDION LIST -->
+              <div id="dispatch-models-list" class="model-rows-container">
+                <!-- Dynamically rendered by app.js:loadModelSelector() -->
               </div>
             </div>
           </div>
